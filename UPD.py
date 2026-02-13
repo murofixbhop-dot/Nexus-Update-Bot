@@ -10,11 +10,10 @@ from threading import Thread
 
 # --- НАСТРОЙКИ (ПРОВЕРЬ ID КАНАЛОВ!) ---
 TOKEN = os.getenv('DISCORDTOKEN') 
-UPDATE_CHANNEL_ID = 1461974088334446704  # Канал для карточек GitHub
-ROBLOX_CHANNEL_ID = 1467906321490641109  # Канал для трекера Roblox
+UPDATE_CHANNEL_ID = 1461974088334446704 
+ROBLOX_CHANNEL_ID = 1467906321490641109 
 DATA_FILE = 'data.json'
 
-# Названия проектов для красивых карточек
 REPO_CONFIG = {
     "Nexus-Beta-TSB": {"name": "✨ TSB (BETA)", "color": 0x00FFFF},
     "Nexus-Hub-2-SEA": {"name": "🎣 Blox Fruits (Sea 2)", "color": 0xFFA500},
@@ -35,12 +34,9 @@ def webhook():
     if data and 'commits' in data:
         repo_name = data.get('repository', {}).get('name', '')
         info = REPO_CONFIG.get(repo_name, REPO_CONFIG["default"])
-        
         last_commit = data['commits'][0]
         message = last_commit.get('message', 'No description')
         author = last_commit.get('author', {}).get('name', 'Developer')
-        
-        # Запуск задачи отправки в Discord
         bot.loop.create_task(send_github_update(info, message, author))
         return jsonify({"status": "success"}), 200
     return jsonify({"status": "ignored"}), 400
@@ -84,34 +80,48 @@ class HistoryView(View):
         await interaction.response.send_message(h_list, ephemeral=True)
 
 # --- ИНИЦИАЛИЗАЦИЯ БОТА ---
-intents = discord.Intents.all() # Даем полные права
+intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+# --- КОМАНДЫ ---
+@bot.command()
+async def version(ctx):
+    """Принудительное обновление статуса Roblox"""
+    try:
+        await ctx.message.delete()
+    except: pass
+    
+    live = get_roblox_v("live")
+    future = get_roblox_v("znext")
+    if live:
+        await update_roblox_msg(ctx.channel, live, future or live)
+
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.CommandNotFound):
+        return # Игнорируем, если команда не найдена
+    print(f"❌ Ошибка команды: {error}")
 
 # --- ОТПРАВКА ОБНОВЛЕНИЙ GITHUB ---
 async def send_github_update(info, commit_text, author):
     channel = bot.get_channel(UPDATE_CHANNEL_ID)
     if not channel: return
-    
     lines = commit_text.split('\n')
-    version = lines[0] if lines else "Alpha v1"
-    
+    version_label = lines[0] if lines else "Alpha v1"
     formatted_logs = []
     for line in lines[1:]:
         if not line.strip(): continue
         low = line.lower()
         emoji = "🟢" if "add" in low else "🔵" if "fix" in low else "🔴" if "rem" in low or "del" in low else "✨"
         formatted_logs.append(f"{emoji} {line.strip()}")
-            
     logs_text = "\n".join(formatted_logs) if formatted_logs else "Update applied"
-
     embed = discord.Embed(title=f"🚀 {info['name']} : Update", color=info["color"])
     embed.add_field(name="📌 Project", value=f"```{info['name']}```", inline=True)
     embed.add_field(name="👤 Developer", value=f"```{author}```", inline=True)
     embed.add_field(name="✅ Status", value="```Working```", inline=True)
-    embed.add_field(name="🆙 Version", value=f"```{version}```", inline=False)
+    embed.add_field(name="🆙 Version", value=f"```{version_label}```", inline=False)
     embed.add_field(name="📑 Change Logs", value=logs_text, inline=False)
     embed.set_footer(text=f"Nexus Intel | {time.strftime('%d.%m.%Y')}")
-    
     await channel.send(content="@everyone", embed=embed)
 
 # --- ТРЕКЕР ROBLOX ---
@@ -126,20 +136,17 @@ async def update_roblox_msg(channel, live, future, is_update=False):
     if live and live not in version_history:
         version_history.append(live)
         if len(version_history) > 20: version_history.pop(0)
-    
     if last_msg_id[0]:
         try:
             m = await channel.fetch_message(last_msg_id[0])
             await m.delete()
         except: pass
-
     is_future = live != future
     embed = discord.Embed(title="Roblox Update Detected!" if is_future else "Roblox Status", color=0xFFCC00 if is_future else 0x2ecc71)
     embed.add_field(name="Current Live Hash:", value=f"`{live}`\n[Download]({f'https://rdd.whatexpsare.online/?channel=LIVE&binaryType=WindowsPlayer&version={live}'})", inline=False)
     if is_future:
         embed.add_field(name="Future Hash (ZNEXT):", value=f"`{future}`", inline=False)
     embed.set_footer(text=f"Nexus Tracker | {time.strftime('%H:%M')}")
-    
     msg = await channel.send(content="@everyone" if is_update else "", embed=embed, view=HistoryView())
     last_msg_id[0] = msg.id
     save_data(live, future, msg.id, version_history)
@@ -156,12 +163,11 @@ async def check_roblox():
 
 @bot.event
 async def on_ready():
-    print(f'✅ Nexus Core запущен под именем: {bot.user}')
+    print(f'✅ Nexus Core запущен: {bot.user}')
     bot.add_view(HistoryView())
     if not check_roblox.is_running(): 
         check_roblox.start()
 
 if __name__ == "__main__":
-    # Запуск Flask и Бота
     Thread(target=run_flask).start()
     bot.run(TOKEN)
