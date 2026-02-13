@@ -32,7 +32,7 @@ def run():
     app.run(host='0.0.0.0', port=10000)
 
 # --- НАСТРОЙКИ ---
-TOKEN = 'DISCORDTOKEN' 
+TOKEN = os.getenv('DISCORDTOKEN') 
 CHANNEL_ID = 1461974088334446704 
 
 # СЛОВАРИК: "имя-репозитория-на-гитхабе": "Красивое Имя"
@@ -102,4 +102,5 @@ async def test(ctx):
 if __name__ == "__main__":
     # Запускаем Flask в отдельном потоке, чтобы он не вешал бота
     Thread(target=run).start()
+
     bot.run(TOKEN)
