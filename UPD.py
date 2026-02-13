@@ -142,32 +142,45 @@ async def send_github_update(info, commit_text, author):
     
     await channel.send(content="@everyone", embed=embed)
 
-# --- МОНИТОРИНГ ИНЖЕКТОРОВ ---
+# --- МОНИТОРИНГ ИНЖЕКТОРОВ (ОБНОВЛЕН ПО ДОКУМЕНТАЦИИ WEAO) ---
 @tasks.loop(minutes=2)
 async def check_exploits():
     channel = bot.get_channel(EXPLOIT_CHANNEL_ID)
     if not channel: return
 
+    headers = {'User-Agent': 'WEAO-3PService'} # Обязательно по документации
     try:
-        r = requests.get("https://api.whatexpsare.online/status", timeout=10)
+        # Используем основной домен из доков
+        r = requests.get("https://weao.xyz/api/status/exploits", timeout=10, headers=headers)
+        if r.status_code != 200:
+            print(f"⚠️ WEAO API Error: {r.status_code}")
+            return
         data = r.json()
-    except: return
+    except Exception as e:
+        print(f"❌ Connection error: {e}")
+        return
 
     embed = discord.Embed(title="🛡️ Nexus Exploit Status", color=0x00FBFF)
     status_text = ""
     
+    # В документации WEAO данные приходят в виде списка объектов
     for entry in data:
-        name = entry.get("exploit", "Unknown")
+        name = entry.get("title", "Unknown") # В доках поле называется title
         if name in EXCLUDE_LIST: continue
         
-        status = entry.get("status", "Unknown").lower()
+        # updateStatus: true - обновлен, false - патчнут
+        is_updated = entry.get("updateStatus", False)
         version = entry.get("version", "N/A")
+        is_detected = entry.get("detected", False)
         
-        emoji = "🟢" if "updated" in status or "working" in status else "🔴"
-        status_text += f"{emoji} **{name}**: `{status.capitalize()}` | (v{version})\n"
+        emoji = "🟢" if is_updated else "🔴"
+        detect_warn = "⚠️" if is_detected else ""
+        
+        status_label = "Working" if is_updated else "Patched"
+        status_text += f"{emoji} **{name}**: `{status_label}` {detect_warn} | (v{version})\n"
 
     embed.description = status_text if status_text else "No data available."
-    embed.set_footer(text=f"Status updated: {time.strftime('%H:%M:%S')}")
+    embed.set_footer(text=f"Sync: {time.strftime('%H:%M:%S')} | Powered by WEAO")
 
     if exploit_msg_id[0]:
         try:
@@ -234,3 +247,4 @@ async def on_ready():
 if __name__ == "__main__":
     Thread(target=run_flask).start()
     bot.run(TOKEN)
+
