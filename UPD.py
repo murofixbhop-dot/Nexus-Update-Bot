@@ -8,17 +8,23 @@ import time
 from flask import Flask, request, jsonify
 from threading import Thread
 
-# --- НАСТРОЙКИ (ПРОВЕРЬ ID КАНАЛОВ!) ---
+# --- НАСТРОЙКИ (ID КАНАЛОВ И РОЛЕЙ) ---
 TOKEN = os.getenv('DISCORDTOKEN') 
 UPDATE_CHANNEL_ID = 1461974088334446704 
 ROBLOX_CHANNEL_ID = 1467906321490641109 
-EXPLOIT_CHANNEL_ID = 1471880566306504754 # Канал для статусов инжекторов
+EXPLOIT_CHANNEL_ID = 1471880566306504754
+ROLE_CHANNEL_ID = 1472109649053356139  # Канал для выбора ролей
 DATA_FILE = 'data.json'
+
+# Твои ID Ролей
+ROLE_SCRIPT_ID = 1472108709059625034
+ROLE_EXECUTER_ID = 1472108653552337049
+ROLE_ROBLOX_ID = 1472108155138867251
 
 # Список исключений для мониторинга
 EXCLUDE_LIST = ["RbxCli", "macexploit", "Severe", "Matcha", "Hydrogen", "DX9WARE V2", "Serotonin"]
 
-# Названия проектов для красивых карточек
+# Названия проектов для красивых карточек GitHub
 REPO_CONFIG = {
     "Nexus-Beta-TSB": {"name": "✨ TSB (BETA)", "color": 0x00FFFF},
     "Nexus-Hub-2-SEA": {"name": "🎣 Blox Fruits (Sea 2)", "color": 0xFFA500},
@@ -26,7 +32,7 @@ REPO_CONFIG = {
     "default": {"name": "Nexus Project", "color": 0xcccccc}
 }
 
-# --- МИНИ-СЕРВЕР ДЛЯ RENDER И WEBHOOK ---
+# --- МИНИ-СЕРВЕР ДЛЯ RENDER ---
 app = Flask('')
 
 @app.route('/')
@@ -49,7 +55,7 @@ def webhook():
 def run_flask():
     app.run(host='0.0.0.0', port=10000)
 
-# --- ЛОГИКА ДАННЫХ ROBLOX ---
+# --- ЛОГИКА ДАННЫХ (ROBLOX & EXPLOITS) ---
 def load_data():
     if os.path.exists(DATA_FILE):
         try:
@@ -77,7 +83,7 @@ last_msg_id = [current_data.get("last_msg_id")]
 version_history = current_data.get("history", [])
 exploit_msg_id = [current_data.get("exploit_msg_id")]
 
-# --- КЛАСС КНОПКИ ИСТОРИИ ---
+# --- ВЬЮ КНОПОК ---
 class HistoryView(View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -92,30 +98,68 @@ class HistoryView(View):
             h_list += f"• `{v}` — [Download]({link})\n"
         await interaction.response.send_message(h_list, ephemeral=True)
 
+class RoleView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def toggle_role(self, interaction: discord.Interaction, role_id: int):
+        role = interaction.guild.get_role(role_id)
+        if not role:
+            return await interaction.response.send_message("Роль не найдена!", ephemeral=True)
+        
+        if role in interaction.user.roles:
+            await interaction.user.remove_roles(role)
+            await interaction.response.send_message(f"❌ Роль **{role.name}** убрана.", ephemeral=True)
+        else:
+            await interaction.user.add_roles(role)
+            await interaction.response.send_message(f"✅ Роль **{role.name}** выдана!", ephemeral=True)
+
+    @discord.ui.button(label="Executer UPD", style=discord.ButtonStyle.primary, custom_id="role_exec")
+    async def exec_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.toggle_role(interaction, ROLE_EXECUTER_ID)
+
+    @discord.ui.button(label="Roblox UPD", style=discord.ButtonStyle.success, custom_id="role_roblox")
+    async def roblox_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.toggle_role(interaction, ROLE_ROBLOX_ID)
+
+    @discord.ui.button(label="Script UPD", style=discord.ButtonStyle.danger, custom_id="role_script")
+    async def script_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.toggle_role(interaction, ROLE_SCRIPT_ID)
+
 # --- ИНИЦИАЛИЗАЦИЯ БОТА ---
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # --- КОМАНДЫ ---
 @bot.command()
+@commands.has_permissions(administrator=True)
+async def init_roles(ctx):
+    """Создает сообщение для выбора ролей"""
+    if ctx.channel.id != ROLE_CHANNEL_ID:
+        return await ctx.send(f"Эту команду можно использовать только в <#{ROLE_CHANNEL_ID}>")
+    
+    embed = discord.Embed(
+        title="🔔 Nexus Core | Notifications",
+        description=(
+            "Выберите роли, чтобы получать уведомления:\n\n"
+            "🔹 **Executer UPD** — Статусы читов\n"
+            "🟢 **Roblox UPD** — Обновления Roblox\n"
+            "🔴 **Script UPD** — Обновления скриптов (GitHub)"
+        ),
+        color=0x2b2d31
+    )
+    await ctx.send(embed=embed, view=RoleView())
+    await ctx.message.delete()
+
+@bot.command()
 async def version(ctx):
     """Принудительное обновление статуса Roblox"""
-    try:
-        await ctx.message.delete()
+    try: await ctx.message.delete()
     except: pass
-    
     live = get_roblox_v("live")
-    future = get_roblox_v("znext")
-    if live:
-        await update_roblox_msg(ctx.channel, live, future or live)
+    if live: await update_roblox_msg(ctx.channel, live, live)
 
-@bot.event
-async def on_command_error(ctx, error):
-    if isinstance(error, commands.CommandNotFound):
-        return 
-    print(f"❌ Ошибка команды: {error}")
-
-# --- ОТПРАВКА ОБНОВЛЕНИЙ GITHUB (ПОЛНАЯ ВЕРСИЯ С ЭМОДЗИ) ---
+# --- ОСНОВНЫЕ ФУНКЦИИ ---
 async def send_github_update(info, commit_text, author):
     channel = bot.get_channel(UPDATE_CHANNEL_ID)
     if not channel: return
@@ -140,9 +184,9 @@ async def send_github_update(info, commit_text, author):
     embed.add_field(name="📑 Change Logs", value=logs_text, inline=False)
     embed.set_footer(text=f"Nexus Intel | {time.strftime('%d.%m.%Y')}")
     
-    await channel.send(content="@everyone", embed=embed)
+    # ПИНГ РОЛИ SCRIPT UPD
+    await channel.send(content=f"<@&{ROLE_SCRIPT_ID}>", embed=embed)
 
-# --- МОНИТОРИНГ ИНЖЕКТОРОВ ---
 @tasks.loop(minutes=2)
 async def check_exploits():
     channel = bot.get_channel(EXPLOIT_CHANNEL_ID)
@@ -170,7 +214,6 @@ async def check_exploits():
     embed.description = status_text if status_text else "No data available."
     embed.set_footer(text=f"Sync: {time.strftime('%H:%M:%S')} | Powered by WEAO")
 
-    # Умный поиск сообщения для редактирования
     if not exploit_msg_id[0]:
         async for message in channel.history(limit=10):
             if message.author == bot.user and message.embeds and "🛡️ Nexus Exploit Status" in str(message.embeds[0].title):
@@ -190,7 +233,6 @@ async def check_exploits():
     
     save_data(last_versions["live"], last_versions["future"], last_msg_id[0], version_history, exploit_msg_id[0])
 
-# --- ТРЕКЕР ROBLOX ---
 def get_roblox_v(channel="live"):
     url = f"https://clientsettings.roblox.com/v2/client-version/WindowsPlayer{'' if channel=='live' else '/channel/znext'}?t={int(time.time())}"
     try:
@@ -203,30 +245,26 @@ async def update_roblox_msg(channel, live, future, is_update=False):
         version_history.append(live)
         if len(version_history) > 20: version_history.pop(0)
     
-    # Умный поиск старой карточки Roblox
     if not last_msg_id[0]:
-        async for message in channel.history(limit=10):
-            if message.author == bot.user and message.embeds and ("Roblox Status" in str(message.embeds[0].title) or "Roblox Update Detected!" in str(message.embeds[0].title)):
-                last_msg_id[0] = message.id
-                break
+        async for m in channel.history(limit=10):
+            if m.author == bot.user and m.embeds and "Roblox" in str(m.embeds[0].title):
+                last_msg_id[0] = m.id; break
 
-    is_future = live != future
-    embed = discord.Embed(title="Roblox Update Detected!" if is_future else "Roblox Status", color=0xFFCC00 if is_future else 0x2ecc71)
+    embed = discord.Embed(title="Roblox Status", color=0x2ecc71)
     embed.add_field(name="Current Live Hash:", value=f"`{live}`\n[Download]({f'https://rdd.whatexpsare.online/?channel=LIVE&binaryType=WindowsPlayer&version={live}'})", inline=False)
-    if is_future:
-        embed.add_field(name="Future Hash (ZNEXT):", value=f"`{future}`", inline=False)
     embed.set_footer(text=f"Nexus Tracker | {time.strftime('%H:%M')}")
+    
+    content = f"<@&{ROLE_ROBLOX_ID}>" if is_update else ""
     
     if last_msg_id[0]:
         try:
             msg = await channel.fetch_message(last_msg_id[0])
-            # Редактируем старое, чтобы не плодить сообщения
-            await msg.edit(content="@everyone" if is_update else "", embed=embed, view=HistoryView())
+            await msg.edit(content=content, embed=embed, view=HistoryView())
         except:
-            msg = await channel.send(content="@everyone" if is_update else "", embed=embed, view=HistoryView())
+            msg = await channel.send(content=content, embed=embed, view=HistoryView())
             last_msg_id[0] = msg.id
     else:
-        msg = await channel.send(content="@everyone" if is_update else "", embed=embed, view=HistoryView())
+        msg = await channel.send(content=content, embed=embed, view=HistoryView())
         last_msg_id[0] = msg.id
     
     save_data(live, future, last_msg_id[0], version_history, exploit_msg_id[0])
@@ -234,8 +272,7 @@ async def update_roblox_msg(channel, live, future, is_update=False):
 @tasks.loop(minutes=1)
 async def check_roblox():
     live, future = get_roblox_v("live"), get_roblox_v("znext")
-    if not live or not future: return
-    if live != last_versions["live"] or future != last_versions["future"]:
+    if live and (live != last_versions["live"] or future != last_versions["future"]):
         channel = bot.get_channel(ROBLOX_CHANNEL_ID)
         if channel:
             last_versions["live"], last_versions["future"] = live, future
@@ -243,12 +280,11 @@ async def check_roblox():
 
 @bot.event
 async def on_ready():
-    print(f'✅ Nexus Core запущен: {bot.user}')
+    print(f'✅ Nexus Core System Ready | User: {bot.user}')
     bot.add_view(HistoryView())
-    if not check_roblox.is_running(): 
-        check_roblox.start()
-    if not check_exploits.is_running():
-        check_exploits.start()
+    bot.add_view(RoleView()) 
+    if not check_roblox.is_running(): check_roblox.start()
+    if not check_exploits.is_running(): check_exploits.start()
 
 if __name__ == "__main__":
     Thread(target=run_flask).start()
