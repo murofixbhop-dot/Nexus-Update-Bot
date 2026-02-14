@@ -142,45 +142,40 @@ async def send_github_update(info, commit_text, author):
     
     await channel.send(content="@everyone", embed=embed)
 
-# --- МОНИТОРИНГ ИНЖЕКТОРОВ (ОБНОВЛЕН ПО ДОКУМЕНТАЦИИ WEAO) ---
+# --- МОНИТОРИНГ ИНЖЕКТОРОВ ---
 @tasks.loop(minutes=2)
 async def check_exploits():
     channel = bot.get_channel(EXPLOIT_CHANNEL_ID)
     if not channel: return
 
-    headers = {'User-Agent': 'WEAO-3PService'} # Обязательно по документации
+    headers = {'User-Agent': 'WEAO-3PService'}
     try:
-        # Используем основной домен из доков
         r = requests.get("https://weao.xyz/api/status/exploits", timeout=10, headers=headers)
-        if r.status_code != 200:
-            print(f"⚠️ WEAO API Error: {r.status_code}")
-            return
+        if r.status_code != 200: return
         data = r.json()
-    except Exception as e:
-        print(f"❌ Connection error: {e}")
-        return
+    except: return
 
     embed = discord.Embed(title="🛡️ Nexus Exploit Status", color=0x00FBFF)
     status_text = ""
-    
-    # В документации WEAO данные приходят в виде списка объектов
     for entry in data:
-        name = entry.get("title", "Unknown") # В доках поле называется title
+        name = entry.get("title", "Unknown")
         if name in EXCLUDE_LIST: continue
-        
-        # updateStatus: true - обновлен, false - патчнут
         is_updated = entry.get("updateStatus", False)
         version = entry.get("version", "N/A")
         is_detected = entry.get("detected", False)
-        
         emoji = "🟢" if is_updated else "🔴"
         detect_warn = "⚠️" if is_detected else ""
-        
-        status_label = "Working" if is_updated else "Patched"
-        status_text += f"{emoji} **{name}**: `{status_label}` {detect_warn} | (v{version})\n"
+        status_text += f"{emoji} **{name}**: `{'Working' if is_updated else 'Patched'}` {detect_warn} | (v{version})\n"
 
     embed.description = status_text if status_text else "No data available."
     embed.set_footer(text=f"Sync: {time.strftime('%H:%M:%S')} | Powered by WEAO")
+
+    # Умный поиск сообщения для редактирования
+    if not exploit_msg_id[0]:
+        async for message in channel.history(limit=10):
+            if message.author == bot.user and message.embeds and "🛡️ Nexus Exploit Status" in str(message.embeds[0].title):
+                exploit_msg_id[0] = message.id
+                break
 
     if exploit_msg_id[0]:
         try:
@@ -189,11 +184,11 @@ async def check_exploits():
         except:
             msg = await channel.send(embed=embed)
             exploit_msg_id[0] = msg.id
-            save_data(last_versions["live"], last_versions["future"], last_msg_id[0], version_history, exploit_msg_id[0])
     else:
         msg = await channel.send(embed=embed)
         exploit_msg_id[0] = msg.id
-        save_data(last_versions["live"], last_versions["future"], last_msg_id[0], version_history, exploit_msg_id[0])
+    
+    save_data(last_versions["live"], last_versions["future"], last_msg_id[0], version_history, exploit_msg_id[0])
 
 # --- ТРЕКЕР ROBLOX ---
 def get_roblox_v(channel="live"):
@@ -208,11 +203,12 @@ async def update_roblox_msg(channel, live, future, is_update=False):
         version_history.append(live)
         if len(version_history) > 20: version_history.pop(0)
     
-    if last_msg_id[0]:
-        try:
-            m = await channel.fetch_message(last_msg_id[0])
-            await m.delete()
-        except: pass
+    # Умный поиск старой карточки Roblox
+    if not last_msg_id[0]:
+        async for message in channel.history(limit=10):
+            if message.author == bot.user and message.embeds and ("Roblox Status" in str(message.embeds[0].title) or "Roblox Update Detected!" in str(message.embeds[0].title)):
+                last_msg_id[0] = message.id
+                break
 
     is_future = live != future
     embed = discord.Embed(title="Roblox Update Detected!" if is_future else "Roblox Status", color=0xFFCC00 if is_future else 0x2ecc71)
@@ -221,9 +217,19 @@ async def update_roblox_msg(channel, live, future, is_update=False):
         embed.add_field(name="Future Hash (ZNEXT):", value=f"`{future}`", inline=False)
     embed.set_footer(text=f"Nexus Tracker | {time.strftime('%H:%M')}")
     
-    msg = await channel.send(content="@everyone" if is_update else "", embed=embed, view=HistoryView())
-    last_msg_id[0] = msg.id
-    save_data(live, future, msg.id, version_history, exploit_msg_id[0])
+    if last_msg_id[0]:
+        try:
+            msg = await channel.fetch_message(last_msg_id[0])
+            # Редактируем старое, чтобы не плодить сообщения
+            await msg.edit(content="@everyone" if is_update else "", embed=embed, view=HistoryView())
+        except:
+            msg = await channel.send(content="@everyone" if is_update else "", embed=embed, view=HistoryView())
+            last_msg_id[0] = msg.id
+    else:
+        msg = await channel.send(content="@everyone" if is_update else "", embed=embed, view=HistoryView())
+        last_msg_id[0] = msg.id
+    
+    save_data(live, future, last_msg_id[0], version_history, exploit_msg_id[0])
 
 @tasks.loop(minutes=1)
 async def check_roblox():
@@ -247,4 +253,3 @@ async def on_ready():
 if __name__ == "__main__":
     Thread(target=run_flask).start()
     bot.run(TOKEN)
-
