@@ -232,35 +232,31 @@ async def ask_ai(uid, prompt, channel=None):
         is_gemma = CURRENT_AI_MODEL in GEMMA_MODELS
 
         if is_gemma:
-            # Gemma не поддерживает system_instruction — добавляем промпт в первое сообщение
+            # Gemma не поддерживает system_instruction совсем
+            # Добавляем системный промпт прямо в текст запроса
             model = genai.GenerativeModel(
                 model_name=CURRENT_AI_MODEL,
                 generation_config=generation_config,
             )
-            # Если история пустая — добавляем системный промпт как первый user/model обмен
-            history_to_use = user_hist[:]
-            if not history_to_use:
-                history_to_use = [
-                    {"role": "user", "parts": [f"[Системные инструкции]: {SYSTEM_PROMPT}\nПонял?"]},
-                    {"role": "model", "parts": ["Понял, буду следовать инструкциям."]}
-                ]
+            actual_prompt = f"{SYSTEM_PROMPT}\n\nПользователь: {prompt}"
         else:
             model = genai.GenerativeModel(
                 model_name=CURRENT_AI_MODEL,
                 generation_config=generation_config,
                 system_instruction=SYSTEM_PROMPT
             )
-            history_to_use = user_hist[:]
+            actual_prompt = prompt
 
-        history_to_use.append({"role": "user", "parts": [prompt]})
-        if len(history_to_use) > MAX_HISTORY:
-            history_to_use = history_to_use[-MAX_HISTORY:]
+        # Строим историю только из реальных сообщений
+        history_to_use = user_hist[:]
+        if len(history_to_use) > MAX_HISTORY - 2:
+            history_to_use = history_to_use[-(MAX_HISTORY - 2):]
 
-        chat = model.start_chat(history=history_to_use[:-1])
-        response = chat.send_message(prompt)
+        chat = model.start_chat(history=history_to_use)
+        response = chat.send_message(actual_prompt)
         answer_text = response.text
 
-        # Сохраняем только реальные сообщения пользователя (без системного префикса)
+        # Сохраняем оригинальный промпт (без системного префикса)
         user_hist.append({"role": "user", "parts": [prompt]})
         user_hist.append({"role": "model", "parts": [answer_text]})
         if len(user_hist) > MAX_HISTORY:
@@ -338,7 +334,15 @@ class AIPanelView(discord.ui.View):
     async def setmodel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.is_owner(interaction):
             return await interaction.response.send_message("❌ Только для Owner.", ephemeral=True)
-        embed = discord.Embed(title="⚙️ Смена модели ИИ", description=f"Текущая: `{CURRENT_AI_MODEL}`", color=0x2ecc71)
+        m = MODELS_INFO.get(CURRENT_AI_MODEL, {})
+        label = m.get("label", CURRENT_AI_MODEL)
+        embed = discord.Embed(
+            title="⚙️ Смена модели ИИ",
+            description=f"**Сейчас активна:** `{label}` (`{CURRENT_AI_MODEL}`)
+
+Выбери новую модель из списка:",
+            color=0x2ecc71
+        )
         await interaction.response.send_message(embed=embed, view=ModelSelectView(), ephemeral=True)
 
     @discord.ui.button(label="Модели", style=discord.ButtonStyle.secondary, custom_id="panel_model", emoji="🤖", row=1)
