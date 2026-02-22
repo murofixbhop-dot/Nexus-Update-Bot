@@ -542,6 +542,11 @@ async def on_message(message):
     if message.channel.id == AI_CHANNEL_ID:
         content = message.content.lower()
 
+        # !panel — пропускаем в process_commands, не удаляем
+        if content.startswith('!panel'):
+            await bot.process_commands(message)
+            return
+
         # ?ai команда — ответ в чат через вебхук
         if content.startswith(('?ai ', '?аи ')):
             prompt = message.content[4:].strip()
