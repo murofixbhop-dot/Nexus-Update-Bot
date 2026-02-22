@@ -223,23 +223,45 @@ def send_file_to_webhook(file_bytes, filename, caption, username, avatar_url):
     requests.post(AI_WEBHOOK_URL, data=data, files=files)
 
 # --- ФУНКЦИЯ ЗАПРОСА К ИИ ---
+GEMMA_MODELS = {"gemma-3-27b-it", "gemma-3-12b-it", "gemma-3-4b-it"}
+
 async def ask_ai(uid, prompt, channel=None):
     """Общая функция запроса к ИИ. Возвращает (success, answer_text или error)"""
     user_hist = get_user_history(uid)
     try:
-        current_model = genai.GenerativeModel(
-            model_name=CURRENT_AI_MODEL,
-            generation_config=generation_config,
-            system_instruction=SYSTEM_PROMPT
-        )
-        user_hist.append({"role": "user", "parts": [prompt]})
-        if len(user_hist) > MAX_HISTORY:
-            user_hist = user_hist[-MAX_HISTORY:]
+        is_gemma = CURRENT_AI_MODEL in GEMMA_MODELS
 
-        chat = current_model.start_chat(history=user_hist[:-1])
+        if is_gemma:
+            # Gemma не поддерживает system_instruction — добавляем промпт в первое сообщение
+            model = genai.GenerativeModel(
+                model_name=CURRENT_AI_MODEL,
+                generation_config=generation_config,
+            )
+            # Если история пустая — добавляем системный промпт как первый user/model обмен
+            history_to_use = user_hist[:]
+            if not history_to_use:
+                history_to_use = [
+                    {"role": "user", "parts": [f"[Системные инструкции]: {SYSTEM_PROMPT}\nПонял?"]},
+                    {"role": "model", "parts": ["Понял, буду следовать инструкциям."]}
+                ]
+        else:
+            model = genai.GenerativeModel(
+                model_name=CURRENT_AI_MODEL,
+                generation_config=generation_config,
+                system_instruction=SYSTEM_PROMPT
+            )
+            history_to_use = user_hist[:]
+
+        history_to_use.append({"role": "user", "parts": [prompt]})
+        if len(history_to_use) > MAX_HISTORY:
+            history_to_use = history_to_use[-MAX_HISTORY:]
+
+        chat = model.start_chat(history=history_to_use[:-1])
         response = chat.send_message(prompt)
         answer_text = response.text
 
+        # Сохраняем только реальные сообщения пользователя (без системного префикса)
+        user_hist.append({"role": "user", "parts": [prompt]})
         user_hist.append({"role": "model", "parts": [answer_text]})
         if len(user_hist) > MAX_HISTORY:
             user_hist = user_hist[-MAX_HISTORY:]
@@ -357,17 +379,32 @@ class AIPanelView(discord.ui.View):
     @discord.ui.button(label="Last Msg", style=discord.ButtonStyle.secondary, custom_id="panel_lastmsg", emoji="📨", row=1)
     async def lastmsg_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         uid = interaction.user.id
-        hist = get_user_history(uid)
-        last_ai = None
-        for item in reversed(hist):
-            if item["role"] == "model":
-                last_ai = item["parts"][0] if item["parts"] else None
-                break
-        if last_ai:
-            preview = last_ai[:1900] + ("..." if len(last_ai) > 1900 else "")
-            await interaction.response.send_message(f"**Последний ответ ИИ для тебя:**\n{preview}", ephemeral=True)
-        else:
-            await interaction.response.send_message("ИИ ещё ничего тебе не отвечал.", ephemeral=True)
+        hist = get_user_history(uid)  # всегда читаем свежие данные из MongoDB
+        if not hist:
+            return await interaction.response.send_message("У тебя ещё нет истории диалога.", ephemeral=True)
+
+        # Берём последние 3 пары вопрос/ответ
+        pairs = []
+        i = len(hist) - 1
+        while i >= 0 and len(pairs) < 3:
+            if hist[i]["role"] == "model" and i > 0 and hist[i-1]["role"] == "user":
+                q = hist[i-1]["parts"][0] if hist[i-1]["parts"] else ""
+                a = hist[i]["parts"][0] if hist[i]["parts"] else ""
+                pairs.append((q, a))
+                i -= 2
+            else:
+                i -= 1
+
+        pairs.reverse()
+        result = "**Последние диалоги с Nexus AI:**\n\n"
+        for q, a in pairs:
+            q_short = q[:100] + ("..." if len(q) > 100 else "")
+            a_short = a[:300] + ("..." if len(a) > 300 else "")
+            result += f"❓ **{q_short}**\n💬 {a_short}\n\n"
+
+        if len(result) > 1900:
+            result = result[:1900] + "..."
+        await interaction.response.send_message(result, ephemeral=True)
 
 # --- МЕНЮ МОДЕЛЕЙ ---
 class ModelSelect(discord.ui.Select):
