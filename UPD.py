@@ -238,7 +238,7 @@ async def ask_ai(uid, prompt, channel=None):
                 model_name=CURRENT_AI_MODEL,
                 generation_config=generation_config,
             )
-            actual_prompt = f"{SYSTEM_PROMPT}\n\nПользователь: {prompt}"
+            actual_prompt = f"Инструкции: отвечай коротко, без вступлений, смайлики редко, код в блоках ```язык\nкод\n```, пиши код полностью.\n\n{prompt}"
         else:
             model = genai.GenerativeModel(
                 model_name=CURRENT_AI_MODEL,
@@ -608,6 +608,32 @@ async def on_message(message):
     await bot.process_commands(message)
 
 # --- КОМАНДЫ ---
+@bot.command()
+async def panel(ctx):
+    """Пересоздать/обновить панель ИИ — только для Owner"""
+    if ctx.channel.id != AI_CHANNEL_ID:
+        return
+    try:
+        await ctx.message.delete()
+    except:
+        pass
+    # Проверка роли Owner
+    if not any(role.id == OWNER_ROLE_ID for role in ctx.author.roles):
+        return
+
+    # Удаляем старую панель если есть
+    panel_msg_id = db_get("ai_panel_msg_id")
+    if panel_msg_id:
+        try:
+            old_msg = await ctx.channel.fetch_message(panel_msg_id)
+            await old_msg.delete()
+        except:
+            pass
+        db_set("ai_panel_msg_id", None)
+
+    # Создаём новую
+    await ensure_ai_panel(ctx.channel)
+
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def init_roles(ctx):
