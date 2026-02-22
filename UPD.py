@@ -338,9 +338,7 @@ class AIPanelView(discord.ui.View):
         label = m.get("label", CURRENT_AI_MODEL)
         embed = discord.Embed(
             title="⚙️ Смена модели ИИ",
-            description=f"**Сейчас активна:** `{label}` (`{CURRENT_AI_MODEL}`)
-
-Выбери новую модель из списка:",
+            description=f"Сейчас активна: {label} ({CURRENT_AI_MODEL})\n\nВыбери новую модель из списка:",
             color=0x2ecc71
         )
         await interaction.response.send_message(embed=embed, view=ModelSelectView(), ephemeral=True)
