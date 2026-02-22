@@ -75,15 +75,75 @@ generation_config = {
 }
 
 SYSTEM_PROMPT = (
-    "Ты — Nexus AI. Ты дружелюбный ассистент. Используй смайлики редко — только когда это уместно. "
-    "Отвечай коротко и по делу. Если вопрос простой — отвечай 1-3 предложениями. "
-    "Если пишешь код — используй блоки кода: ```язык\nкод\n```. "
-    "Код пиши полностью, не обрезай и не удаляй ничего из предыдущего кода если пользователь не просил об этом. "
-    "Не добавляй лишних объяснений если не просят."
+    "Ты — Nexus AI. Отвечай максимально коротко — 1-2 предложения если вопрос простой. "
+    "Никаких вступлений, не повторяй вопрос, без лишних слов. "
+    "Смайлики только если очень уместно. "
+    "Код пиши полностью, ничего не обрезай и не удаляй из предыдущего кода если не просили. "
+    "Код оборачивай в блоки: ```язык\nкод\n```."
 )
 
 CURRENT_AI_MODEL = "gemma-3-27b"
 MAX_HISTORY = 30
+
+# Информация о моделях: название, лимиты (requests/day, tokens/min)
+MODELS_INFO = {
+    "gemma-3-27b": {
+        "label": "Gemma 3 27B",
+        "call": "gemma-3-27b",
+        "rpm": 2,
+        "rpd": 50,
+        "tpm": 8000,
+        "desc": "Самая мощная локальная модель"
+    },
+    "gemma-3-12b": {
+        "label": "Gemma 3 12B",
+        "call": "gemma-3-12b",
+        "rpm": 15,
+        "rpd": 100,
+        "tpm": 15000,
+        "desc": "Баланс скорости и качества"
+    },
+    "gemma-3-4b": {
+        "label": "Gemma 3 4B",
+        "call": "gemma-3-4b",
+        "rpm": 30,
+        "rpd": 300,
+        "tpm": 30000,
+        "desc": "Лёгкая и быстрая"
+    },
+    "gemma-3-2b": {
+        "label": "Gemma 3 2B",
+        "call": "gemma-3-2b",
+        "rpm": 30,
+        "rpd": 300,
+        "tpm": 30000,
+        "desc": "Ультра лёгкая"
+    },
+    "gemini-2.0-flash": {
+        "label": "Gemini 2.0 Flash",
+        "call": "gemini-2.0-flash",
+        "rpm": 15,
+        "rpd": 1500,
+        "tpm": 1000000,
+        "desc": "Быстрая, большой контекст"
+    },
+    "gemini-2.5-flash-preview-05-20": {
+        "label": "Gemini 2.5 Flash",
+        "call": "gemini-2.5-flash-preview-05-20",
+        "rpm": 10,
+        "rpd": 500,
+        "tpm": 250000,
+        "desc": "Новейшая, очень умная"
+    },
+    "gemini-2.5-pro-preview-06-05": {
+        "label": "Gemini 2.5 Pro",
+        "call": "gemini-2.5-pro-preview-06-05",
+        "rpm": 5,
+        "rpd": 100,
+        "tpm": 250000,
+        "desc": "Самая мощная от Google"
+    },
+}
 
 EXCLUDE_LIST = ["RbxCli", "macexploit", "Severe", "Matcha", "Hydrogen", "DX9WARE V2", "Serotonin"]
 
@@ -160,6 +220,94 @@ def save_state():
     db_set("last_msg_id", last_msg_id[0])
     db_set("exploit_msg_id", exploit_msg_id[0])
 
+# --- ВЕБХУК ---
+def send_to_webhook(content, username, avatar_url):
+    data = {"content": content, "username": username, "avatar_url": avatar_url}
+    requests.post(AI_WEBHOOK_URL, json=data)
+
+def send_file_to_webhook(file_bytes, filename, caption, username, avatar_url):
+    files = {"file": (filename, file_bytes, "text/plain")}
+    data = {"content": caption, "username": username, "avatar_url": avatar_url}
+    requests.post(AI_WEBHOOK_URL, data=data, files=files)
+
+# --- ФУНКЦИЯ ЗАПРОСА К ИИ ---
+async def ask_ai(uid, prompt, channel=None):
+    """Общая функция запроса к ИИ. Возвращает (success, answer_text или error)"""
+    user_hist = get_user_history(uid)
+    try:
+        current_model = genai.GenerativeModel(
+            model_name=CURRENT_AI_MODEL,
+            generation_config=generation_config,
+            system_instruction=SYSTEM_PROMPT
+        )
+        user_hist.append({"role": "user", "parts": [prompt]})
+        if len(user_hist) > MAX_HISTORY:
+            user_hist = user_hist[-MAX_HISTORY:]
+
+        chat = current_model.start_chat(history=user_hist[:-1])
+        response = chat.send_message(prompt)
+        answer_text = response.text
+
+        user_hist.append({"role": "model", "parts": [answer_text]})
+        if len(user_hist) > MAX_HISTORY:
+            user_hist = user_hist[-MAX_HISTORY:]
+
+        save_user_history(uid, user_hist)
+        return True, answer_text
+    except Exception as e:
+        return False, str(e)
+
+# --- МОДАЛЬНОЕ ОКНО ДЛЯ ЗАПРОСА К ИИ ---
+class AskAIModal(discord.ui.Modal, title="Nexus AI — Задать вопрос"):
+    prompt = discord.ui.TextInput(
+        label="Твой вопрос или запрос",
+        style=discord.TextStyle.paragraph,
+        placeholder="Напиши сюда что угодно...",
+        required=True,
+        max_length=2000
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        uid = interaction.user.id
+        success, answer_text = await ask_ai(uid, self.prompt.value)
+
+        if not success:
+            await interaction.followup.send(f"❌ Ошибка: {answer_text}", ephemeral=True)
+            return
+
+        lang, code = extract_code_info(answer_text)
+
+        text_only = re.sub(r"```[\w]*\n[\s\S]*?```", "", answer_text).strip()
+        if code:
+            if len(code) < 300:
+                # Короткий код — красиво в сообщение
+                ext, _ = get_file_info(lang)
+                inline = f"```{lang or ext}\n{code}\n```"
+                msg = (text_only + "\n" + inline) if text_only else inline
+                preview = msg[:1900] + ("..." if len(msg) > 1900 else "")
+                await interaction.followup.send(
+                    content=f"**Ответ Nexus AI:**\n{preview}",
+                    ephemeral=True
+                )
+            else:
+                # Длинный код — файлом
+                ext, label = get_file_info(lang)
+                filename = f"{label}.{ext}"
+                msg = (text_only + "\n*(Код отправлен файлом)*") if text_only else "*(Код отправлен файлом)*"
+                import io
+                await interaction.followup.send(
+                    content=f"**Ответ Nexus AI:**\n{msg}",
+                    file=discord.File(fp=io.BytesIO(code.encode('utf-8')), filename=filename),
+                    ephemeral=True
+                )
+        else:
+            preview = answer_text[:1900] + ("..." if len(answer_text) > 1900 else "")
+            await interaction.followup.send(
+                content=f"**Ответ Nexus AI:**\n{preview}",
+                ephemeral=True
+            )
+
 # --- ПАНЕЛЬ ИИ ---
 class AIPanelView(discord.ui.View):
     def __init__(self):
@@ -168,38 +316,53 @@ class AIPanelView(discord.ui.View):
     def is_owner(self, interaction):
         return any(role.id == OWNER_ROLE_ID for role in interaction.user.roles)
 
-    @discord.ui.button(label="Set Model", style=discord.ButtonStyle.primary, custom_id="panel_setmodel", emoji="⚙️")
+    @discord.ui.button(label="Спросить ИИ", style=discord.ButtonStyle.success, custom_id="panel_askai", emoji="💬", row=0)
+    async def askai_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(AskAIModal())
+
+    @discord.ui.button(label="Set Model", style=discord.ButtonStyle.primary, custom_id="panel_setmodel", emoji="⚙️", row=1)
     async def setmodel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.is_owner(interaction):
             return await interaction.response.send_message("❌ Только для Owner.", ephemeral=True)
         embed = discord.Embed(title="⚙️ Смена модели ИИ", description=f"Текущая: `{CURRENT_AI_MODEL}`", color=0x2ecc71)
         await interaction.response.send_message(embed=embed, view=ModelSelectView(), ephemeral=True)
 
-    @discord.ui.button(label="Model", style=discord.ButtonStyle.secondary, custom_id="panel_model", emoji="🤖")
+    @discord.ui.button(label="Модели", style=discord.ButtonStyle.secondary, custom_id="panel_model", emoji="🤖", row=1)
     async def model_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.is_owner(interaction):
             return await interaction.response.send_message("❌ Только для Owner.", ephemeral=True)
-        embed = discord.Embed(title="🤖 Доступные модели", color=0x3498db)
-        embed.description = (
-            f"**Активная:** `{CURRENT_AI_MODEL}`\n\n"
-            "• `gemma-3-27b` — Мощная\n"
-            "• `gemma-3-12b` — Баланс\n"
-            "• `gemma-3-4b` — Лёгкая\n"
-            "• `gemma-3-2b` — Ультра лёгкая\n"
-            "• `gemini-3-flash` — Быстрая\n"
-            "• `gemini-2.5-flash` — Быстрая"
-        )
+        embed = discord.Embed(title="🤖 Все доступные модели Nexus AI", color=0x3498db)
+        desc = f"**Активная сейчас:** `{CURRENT_AI_MODEL}`\n\n"
+        desc += "Как вызвать: `?ai ваш вопрос` — бот использует активную модель.\n\n"
+        for key, m in MODELS_INFO.items():
+            desc += f"**{m['label']}**\n"
+            desc += f"┣ Вызов в коде: `{m['call']}`\n"
+            desc += f"┣ {m['desc']}\n"
+            desc += f"┗ Лимиты: {m['rpm']} req/min • {m['rpd']} req/day • {m['tpm']:,} tok/min\n\n"
+        embed.description = desc
+        embed.set_footer(text="Сменить модель может только Owner через кнопку Set Model")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @discord.ui.button(label="Limit", style=discord.ButtonStyle.secondary, custom_id="panel_limit", emoji="📊")
+    @discord.ui.button(label="Лимиты", style=discord.ButtonStyle.secondary, custom_id="panel_limit", emoji="📊", row=1)
     async def limit_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.is_owner(interaction):
             return await interaction.response.send_message("❌ Только для Owner.", ephemeral=True)
-        embed = discord.Embed(title="📊 Лимиты Nexus AI", color=0x9b59b6)
-        embed.description = f"• Модель: **{CURRENT_AI_MODEL}**\n• Статус: 🟢 Online\n• Запросы: Unlimited\n• Контекст: до 1M токенов"
+        m = MODELS_INFO.get(CURRENT_AI_MODEL)
+        embed = discord.Embed(title="📊 Лимиты активной модели", color=0x9b59b6)
+        if m:
+            embed.description = (
+                f"**Модель:** `{m['label']}`\n"
+                f"**Статус:** 🟢 Online\n\n"
+                f"• Запросов в минуту: **{m['rpm']}**\n"
+                f"• Запросов в день: **{m['rpd']}**\n"
+                f"• Токенов в минуту: **{m['tpm']:,}**\n\n"
+                f"*Лимиты установлены Google AI Free Tier*"
+            )
+        else:
+            embed.description = f"• Модель: **{CURRENT_AI_MODEL}**\n• Статус: 🟢 Online\n• Лимиты: неизвестны для этой модели"
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @discord.ui.button(label="Last Msg", style=discord.ButtonStyle.success, custom_id="panel_lastmsg", emoji="💬")
+    @discord.ui.button(label="Last Msg", style=discord.ButtonStyle.secondary, custom_id="panel_lastmsg", emoji="📨", row=1)
     async def lastmsg_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         uid = interaction.user.id
         hist = get_user_history(uid)
@@ -218,12 +381,13 @@ class AIPanelView(discord.ui.View):
 class ModelSelect(discord.ui.Select):
     def __init__(self):
         options = [
-            discord.SelectOption(label="Gemma 3 27B", value="gemma-3-27b", emoji="🧠"),
-            discord.SelectOption(label="Gemma 3 12B", value="gemma-3-12b", emoji="🤖"),
-            discord.SelectOption(label="Gemini 3 Flash", value="gemini-3-flash", emoji="⚡"),
-            discord.SelectOption(label="Gemini 2.5 Flash", value="gemini-2.5-flash", emoji="🔥"),
-            discord.SelectOption(label="Gemma 3 4B", value="gemma-3-4b", emoji="📱"),
-            discord.SelectOption(label="Gemma 3 2B", value="gemma-3-2b", emoji="🔋"),
+            discord.SelectOption(label="Gemma 3 27B", value="gemma-3-27b", emoji="🧠", description="50 req/day • 8k tok/min"),
+            discord.SelectOption(label="Gemma 3 12B", value="gemma-3-12b", emoji="🤖", description="100 req/day • 15k tok/min"),
+            discord.SelectOption(label="Gemma 3 4B", value="gemma-3-4b", emoji="📱", description="300 req/day • 30k tok/min"),
+            discord.SelectOption(label="Gemma 3 2B", value="gemma-3-2b", emoji="🔋", description="300 req/day • 30k tok/min"),
+            discord.SelectOption(label="Gemini 2.0 Flash", value="gemini-2.0-flash", emoji="⚡", description="1500 req/day • 1M tok/min"),
+            discord.SelectOption(label="Gemini 2.5 Flash", value="gemini-2.5-flash-preview-05-20", emoji="🔥", description="500 req/day • 250k tok/min"),
+            discord.SelectOption(label="Gemini 2.5 Pro", value="gemini-2.5-pro-preview-06-05", emoji="👑", description="100 req/day • 250k tok/min"),
         ]
         super().__init__(placeholder="Выберите модель...", min_values=1, max_values=1, options=options)
 
@@ -232,7 +396,9 @@ class ModelSelect(discord.ui.Select):
         if not any(role.id == OWNER_ROLE_ID for role in interaction.user.roles):
             return await interaction.response.send_message("❌ Нет прав.", ephemeral=True)
         CURRENT_AI_MODEL = self.values[0]
-        await interaction.response.send_message(f"✅ Модель изменена на **{CURRENT_AI_MODEL}**.", ephemeral=True)
+        m = MODELS_INFO.get(CURRENT_AI_MODEL, {})
+        label = m.get("label", CURRENT_AI_MODEL)
+        await interaction.response.send_message(f"✅ Модель изменена на **{label}** (`{CURRENT_AI_MODEL}`).", ephemeral=True)
 
 class ModelSelectView(discord.ui.View):
     def __init__(self):
@@ -286,42 +452,38 @@ class RoleView(View):
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-def send_to_webhook(content, username, avatar_url):
-    data = {"content": content, "username": username, "avatar_url": avatar_url}
-    requests.post(AI_WEBHOOK_URL, json=data)
-
-def send_file_to_webhook(file_bytes, filename, caption, username, avatar_url):
-    files = {"file": (filename, file_bytes, "text/plain")}
-    data = {"content": caption, "username": username, "avatar_url": avatar_url}
-    requests.post(AI_WEBHOOK_URL, data=data, files=files)
-
 # --- ПАНЕЛЬ В AI КАНАЛЕ ---
 async def ensure_ai_panel(channel):
     panel_msg_id = db_get("ai_panel_msg_id")
     if panel_msg_id:
         try:
             await channel.fetch_message(panel_msg_id)
-            return
+            return  # Панель уже существует
         except:
             db_set("ai_panel_msg_id", None)
 
-    async for msg in channel.history(limit=30):
+    # Ищем существующую панель в истории
+    async for msg in channel.history(limit=50):
         if msg.author == bot.user and msg.embeds:
             title = msg.embeds[0].title or ""
             if "Nexus AI" in title and "Panel" in title:
                 db_set("ai_panel_msg_id", msg.id)
                 return
 
+    # Создаём новую панель
     embed = discord.Embed(
         title="🤖 Nexus AI | Panel",
         description=(
-            "Используй **`?ai <вопрос>`** чтобы пообщаться с ИИ.\n"
-            "**`?clear`** — очистить свою историю диалога.\n\n"
-            "**Кнопки:**\n"
+            "**Способы общения с ИИ:**\n"
+            "┣ Кнопка **💬 Спросить ИИ** — ответ только тебе (приватно)\n"
+            "┗ Команда **`?ai <вопрос>`** — ответ в чат через вебхук\n\n"
+            "**`?clear`** — очистить свою историю диалога\n\n"
+            "**Кнопки панели:**\n"
+            "💬 **Спросить ИИ** — задать вопрос приватно\n"
             "⚙️ **Set Model** — сменить модель *(Owner)*\n"
-            "🤖 **Model** — список моделей *(Owner)*\n"
-            "📊 **Limit** — лимиты *(Owner)*\n"
-            "💬 **Last Msg** — твой последний ответ ИИ\n\n"
+            "🤖 **Модели** — все доступные модели *(Owner)*\n"
+            "📊 **Лимиты** — лимиты активной модели *(Owner)*\n"
+            "📨 **Last Msg** — твой последний ответ от ИИ\n\n"
             "*ИИ помнит историю отдельно для каждого пользователя.*"
         ),
         color=0x00FBFF
@@ -339,66 +501,61 @@ async def on_message(message):
     if message.channel.id == AI_CHANNEL_ID:
         content = message.content.lower()
 
+        # ?ai команда — ответ в чат через вебхук
         if content.startswith(('?ai ', '?аи ')):
             prompt = message.content[4:].strip()
             if not prompt:
+                try: await message.delete()
+                except: pass
                 return
             try:
                 await message.delete()
             except:
                 pass
 
-            uid = message.author.id
-            user_hist = get_user_history(uid)
-
             async with message.channel.typing():
-                try:
-                    current_model = genai.GenerativeModel(
-                        model_name=CURRENT_AI_MODEL,
-                        generation_config=generation_config,
-                        system_instruction=SYSTEM_PROMPT
+                success, answer_text = await ask_ai(message.author.id, prompt)
+                if not success:
+                    await message.channel.send(
+                        f"❌ Ошибка Nexus AI (Модель: `{CURRENT_AI_MODEL}`): {answer_text}",
+                        delete_after=15
                     )
+                    return
 
-                    user_hist.append({"role": "user", "parts": [prompt]})
-                    if len(user_hist) > MAX_HISTORY:
-                        user_hist = user_hist[-MAX_HISTORY:]
+                lang, code = extract_code_info(answer_text)
+                caption = f"**Ответ для {message.author.mention}:**"
 
-                    chat = current_model.start_chat(history=user_hist[:-1])
-                    response = chat.send_message(prompt)
-                    answer_text = response.text
-
-                    user_hist.append({"role": "model", "parts": [answer_text]})
-                    if len(user_hist) > MAX_HISTORY:
-                        user_hist = user_hist[-MAX_HISTORY:]
-
-                    save_user_history(uid, user_hist)
-
-                    lang, code = extract_code_info(answer_text)
-                    caption = f"**Ответ для {message.author.mention}:**"
-
-                    if code and len(code) > 400:
+                text_only = re.sub(r"```[\w]*\n[\s\S]*?```", "", answer_text).strip()
+                if code:
+                    if len(code) < 300:
+                        # Короткий код — красиво inline
+                        ext, _ = get_file_info(lang)
+                        inline = f"```{lang or ext}\n{code}\n```"
+                        msg = (text_only + "\n" + inline) if text_only else inline
+                        full = f"{caption}\n{msg}"
+                        if len(full) > 1990:
+                            for i in range(0, len(full), 1990):
+                                send_to_webhook(full[i:i+1990], "Nexus AI", AI_AVATAR_URL)
+                        else:
+                            send_to_webhook(full, "Nexus AI", AI_AVATAR_URL)
+                    else:
+                        # Длинный код — файлом
                         ext, label = get_file_info(lang)
                         filename = f"{label}.{ext}"
-                        text_only = re.sub(r"```[\w]*\n[\s\S]*?```", "", answer_text).strip()
                         if text_only:
                             caption += f"\n{text_only}"
                         caption += "\n*(Код отправлен файлом)*"
                         send_file_to_webhook(code.encode("utf-8"), filename, caption, "Nexus AI", AI_AVATAR_URL)
+                else:
+                    full_answer = f"{caption}\n{answer_text}"
+                    if len(full_answer) > 1990:
+                        for i in range(0, len(full_answer), 1990):
+                            send_to_webhook(full_answer[i:i+1990], "Nexus AI", AI_AVATAR_URL)
                     else:
-                        full_answer = f"{caption}\n{answer_text}"
-                        if len(full_answer) > 1990:
-                            for i in range(0, len(full_answer), 1990):
-                                send_to_webhook(full_answer[i:i+1990], "Nexus AI", AI_AVATAR_URL)
-                        else:
-                            send_to_webhook(full_answer, "Nexus AI", AI_AVATAR_URL)
-
-                except Exception as e:
-                    await message.channel.send(
-                        f"❌ Ошибка Nexus AI (Модель: `{CURRENT_AI_MODEL}`): {e}",
-                        delete_after=15
-                    )
+                        send_to_webhook(full_answer, "Nexus AI", AI_AVATAR_URL)
             return
 
+        # ?clear команда
         if content.startswith(('?clear', '?клир')):
             try:
                 await message.delete()
@@ -407,9 +564,16 @@ async def on_message(message):
             delete_user_history(message.author.id)
             await message.channel.send(
                 f"✅ {message.author.mention}, история диалога очищена.",
-                delete_after=10
+                delete_after=8
             )
             return
+
+        # Любое другое сообщение в AI канале — удаляем чтобы не засорять
+        try:
+            await message.delete()
+        except:
+            pass
+        return
 
     await bot.process_commands(message)
 
