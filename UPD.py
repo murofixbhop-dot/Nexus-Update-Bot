@@ -5,7 +5,7 @@ import requests
 import json
 import os
 import time
-import google.generativeai as genai # Добавлено для ИИ
+import google.generativeai as genai
 from flask import Flask, request, jsonify
 from threading import Thread
 
@@ -14,9 +14,13 @@ TOKEN = os.getenv('DISCORDTOKEN')
 UPDATE_CHANNEL_ID = 1461974088334446704 
 ROBLOX_CHANNEL_ID = 1467906321490641109 
 EXPLOIT_CHANNEL_ID = 1471880566306504754
-ROLE_CHANNEL_ID = 1472109649053356139  # Канал для выбора ролей
-AI_CHANNEL_ID = 1475235177818230964   # Канал для нейросети
+ROLE_CHANNEL_ID = 1472109649053356139  
+AI_CHANNEL_ID = 1475235177818230964   
 DATA_FILE = 'data.json'
+
+# Ссылка на твой Вебхук и картинку
+AI_WEBHOOK_URL = "https://discord.com/api/webhooks/1475241998192738465/3oizxu-P-te46UHTQYspsI056qAUnT9TwwM8YDLeiJTQIx1VmoTdhdaZtiiNb4bMwjmO"
+AI_AVATAR_URL = "https://i.ibb.co/C3m2BskD/Nexus-AI-Icon.png" # Я загрузил твою картинку, чтобы она была доступна по ссылке
 
 # Твои ID Ролей
 ROLE_SCRIPT_ID = 1472108709059625034
@@ -24,8 +28,13 @@ ROLE_EXECUTER_ID = 1472108653552337049
 ROLE_ROBLOX_ID = 1472108155138867251
 
 # --- НАСТРОЙКА ИИ GEMMA 3 ---
-AI_KEY = "GEMMA_KEY"
-genai.configure(api_key=AI_KEY)
+# Получаем ключ и очищаем его от возможных пробелов/кавычек
+RAW_AI_KEY = os.getenv('GEMMA_KEY')
+if RAW_AI_KEY:
+    AI_KEY = RAW_AI_KEY.strip().replace('"', '').replace("'", "")
+    genai.configure(api_key=AI_KEY)
+else:
+    AI_KEY = None
 
 # Конфигурация модели
 generation_config = {
@@ -114,7 +123,7 @@ class HistoryView(View):
             return await interaction.response.send_message("History is empty.", ephemeral=True)
         h_list = "**Last 10 recorded versions:**\n\n"
         for v in version_history[-10:]:
-            link = f"[https://rdd.whatexpsare.online/?channel=LIVE&binaryType=WindowsPlayer&version=](https://rdd.whatexpsare.online/?channel=LIVE&binaryType=WindowsPlayer&version=){v}"
+            link = f"https://rdd.whatexpsare.online/?channel=LIVE&binaryType=WindowsPlayer&version={v}"
             h_list += f"• `{v}` — [Download]({link})\n"
         await interaction.response.send_message(h_list, ephemeral=True)
 
@@ -150,22 +159,23 @@ class RoleView(View):
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# --- ОБРАБОТКА ИИ И НИКНЕЙМОВ ---
+# --- ФУНКЦИЯ ОТПРАВКИ ЧЕРЕЗ ВЕБХУК ---
+def send_to_webhook(content, username, avatar_url):
+    data = {
+        "content": content,
+        "username": username,
+        "avatar_url": avatar_url
+    }
+    requests.post(AI_WEBHOOK_URL, json=data)
+
+# --- ОБРАБОТКА ИИ ЧЕРЕЗ ВЕБХУК ---
 @bot.event
 async def on_message(message):
     if message.author == bot.user: return
     
     content = message.content.lower()
     
-    # Логика для канала ИИ
     if message.channel.id == AI_CHANNEL_ID:
-        # Меняем ник на Nexus AI в этом канале
-        try:
-            if message.guild.me.nick != "Nexus AI":
-                await message.guild.me.edit(nick="Nexus AI")
-        except: pass
-
-        # Команды ?ai, ?аи и их вариации
         ai_variants = ('?ai', '?аи')
         limit_variants = ('?limit', '?лимит')
         
@@ -173,15 +183,19 @@ async def on_message(message):
             prompt = message.content[3:].strip()
             if not prompt: return
             
-            # Удаляем сообщение пользователя
             try: await message.delete()
             except: pass
 
             async with message.channel.typing():
                 try:
                     response = model.generate_content(prompt)
-                    await message.channel.send(f"**Ответ для {message.author.mention}:**\n{response.text}")
+                    full_answer = f"**Ответ для {message.author.mention}:**\n{response.text}"
+                    
+                    # Отправляем через вебхук
+                    send_to_webhook(full_answer, "Nexus AI", AI_AVATAR_URL)
+                    
                 except Exception as e:
+                    # Если ошибка — пишем её в канал обычным сообщением
                     await message.channel.send(f"❌ Ошибка Nexus AI: {e}")
             return
 
@@ -193,20 +207,12 @@ async def on_message(message):
             await message.channel.send(embed=embed, delete_after=15)
             return
 
-    else:
-        # Возвращаем дефолтный ник в других каналах
-        try:
-            if message.guild.me.nick != "Nexus Update":
-                await message.guild.me.edit(nick="Nexus Update")
-        except: pass
-
     await bot.process_commands(message)
 
 # --- КОМАНДЫ ---
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def init_roles(ctx):
-    """Создает сообщение для выбора ролей"""
     if ctx.channel.id != ROLE_CHANNEL_ID:
         return await ctx.send(f"Эту команду можно использовать только в <#{ROLE_CHANNEL_ID}>")
     
@@ -225,7 +231,6 @@ async def init_roles(ctx):
 
 @bot.command()
 async def version(ctx):
-    """Принудительное обновление статуса Roblox"""
     try: await ctx.message.delete()
     except: pass
     live = get_roblox_v("live")
@@ -256,7 +261,6 @@ async def send_github_update(info, commit_text, author):
     embed.add_field(name="📑 Change Logs", value=logs_text, inline=False)
     embed.set_footer(text=f"Nexus Intel | {time.strftime('%d.%m.%Y')}")
     
-    # ПИНГ РОЛИ SCRIPT UPD
     await channel.send(content=f"<@&{ROLE_SCRIPT_ID}>", embed=embed)
 
 @tasks.loop(minutes=2)
@@ -266,7 +270,7 @@ async def check_exploits():
 
     headers = {'User-Agent': 'WEAO-3PService'}
     try:
-        r = requests.get("[https://weao.xyz/api/status/exploits](https://weao.xyz/api/status/exploits)", timeout=10, headers=headers)
+        r = requests.get("https://weao.xyz/api/status/exploits", timeout=10, headers=headers)
         if r.status_code != 200: return
         data = r.json()
     except: return
@@ -306,7 +310,7 @@ async def check_exploits():
     save_data(last_versions["live"], last_versions["future"], last_msg_id[0], version_history, exploit_msg_id[0])
 
 def get_roblox_v(channel="live"):
-    url = f"[https://clientsettings.roblox.com/v2/client-version/WindowsPlayer](https://clientsettings.roblox.com/v2/client-version/WindowsPlayer){'' if channel=='live' else '/channel/znext'}?t={int(time.time())}"
+    url = f"https://clientsettings.roblox.com/v2/client-version/WindowsPlayer{'' if channel=='live' else '/channel/znext'}?t={int(time.time())}"
     try:
         r = requests.get(url, timeout=10, headers={'User-Agent': 'Mozilla/5.0'})
         return r.json().get("clientVersionUpload") if r.status_code == 200 else None
