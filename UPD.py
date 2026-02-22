@@ -79,10 +79,21 @@ SYSTEM_PROMPT = (
     "Никаких вступлений, не повторяй вопрос, без лишних слов. "
     "Смайлики только если очень уместно. "
     "Код пиши полностью, ничего не обрезай и не удаляй из предыдущего кода если не просили. "
-    "Код оборачивай в блоки: ```язык\nкод\n```."
+    "Код оборачивай в блоки: ```язык\nкод\n```. "
+    "У тебя нет доступа в интернет. Если просят что-то поискать — честно скажи об этом и ответь из своих знаний. "
+    "Никогда не придумывай ссылки и не симулируй поиск."
 )
 
-CURRENT_AI_MODEL = "gemini-2.5-flash"
+# Текущая модель хранится в MongoDB для синхронизации
+def get_current_model():
+    return db_get("current_model", "gemini-2.5-flash")
+
+def set_current_model(model):
+    db_set("current_model", model)
+
+# Для удобства — инициализируем если не задана
+if not db_get("current_model"):
+    set_current_model("gemini-2.5-flash")
 MAX_HISTORY = 30
 
 # Информация о моделях: название, лимиты (requests/day, tokens/min)
@@ -229,19 +240,19 @@ async def ask_ai(uid, prompt, channel=None):
     """Общая функция запроса к ИИ. Возвращает (success, answer_text или error)"""
     user_hist = get_user_history(uid)
     try:
-        is_gemma = CURRENT_AI_MODEL in GEMMA_MODELS
+        is_gemma = get_current_model() in GEMMA_MODELS
 
         if is_gemma:
             # Gemma не поддерживает system_instruction совсем
-            # Добавляем системный промпт прямо в текст запроса
             model = genai.GenerativeModel(
-                model_name=CURRENT_AI_MODEL,
+                model_name=get_current_model(),
                 generation_config=generation_config,
             )
-            actual_prompt = f"Инструкции: отвечай коротко, без вступлений, смайлики редко, код в блоках ```язык\nкод\n```, пиши код полностью.\n\n{prompt}"
+            # Для Gemma — короткая инструкция без упоминания кода
+            actual_prompt = f"Отвечай текстом, коротко и по делу. Не пиши код если не просят. Если просят найти что-то в интернете — скажи что у тебя нет доступа в интернет и ответь из своих знаний. Вопрос: {prompt}"
         else:
             model = genai.GenerativeModel(
-                model_name=CURRENT_AI_MODEL,
+                model_name=get_current_model(),
                 generation_config=generation_config,
                 system_instruction=SYSTEM_PROMPT
             )
@@ -334,11 +345,11 @@ class AIPanelView(discord.ui.View):
     async def setmodel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.is_owner(interaction):
             return await interaction.response.send_message("❌ Только для Owner.", ephemeral=True)
-        m = MODELS_INFO.get(CURRENT_AI_MODEL, {})
-        label = m.get("label", CURRENT_AI_MODEL)
+        m = MODELS_INFO.get(get_current_model(), {})
+        label = m.get("label", get_current_model())
         embed = discord.Embed(
             title="⚙️ Смена модели ИИ",
-            description=f"Сейчас активна: {label} ({CURRENT_AI_MODEL})\n\nВыбери новую модель из списка:",
+            description=f"Сейчас активна: {label} ({get_current_model()})\n\nВыбери новую модель из списка:",
             color=0x2ecc71
         )
         await interaction.response.send_message(embed=embed, view=ModelSelectView(), ephemeral=True)
@@ -348,7 +359,7 @@ class AIPanelView(discord.ui.View):
         if not self.is_owner(interaction):
             return await interaction.response.send_message("❌ Только для Owner.", ephemeral=True)
         embed = discord.Embed(title="🤖 Все доступные модели Nexus AI", color=0x3498db)
-        desc = f"**Активная сейчас:** `{CURRENT_AI_MODEL}`\n\n"
+        desc = f"**Активная сейчас:** `{get_current_model()}`\n\n"
         desc += "Как вызвать: `?ai ваш вопрос` — бот использует активную модель.\n\n"
         for key, m in MODELS_INFO.items():
             desc += f"**{m['label']}**\n"
@@ -363,7 +374,7 @@ class AIPanelView(discord.ui.View):
     async def limit_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.is_owner(interaction):
             return await interaction.response.send_message("❌ Только для Owner.", ephemeral=True)
-        m = MODELS_INFO.get(CURRENT_AI_MODEL)
+        m = MODELS_INFO.get(get_current_model())
         embed = discord.Embed(title="📊 Лимиты активной модели", color=0x9b59b6)
         if m:
             embed.description = (
@@ -375,7 +386,7 @@ class AIPanelView(discord.ui.View):
                 f"*Лимиты установлены Google AI Free Tier*"
             )
         else:
-            embed.description = f"• Модель: **{CURRENT_AI_MODEL}**\n• Статус: 🟢 Online\n• Лимиты: неизвестны для этой модели"
+            embed.description = f"• Модель: **{get_current_model()}**\n• Статус: 🟢 Online\n• Лимиты: неизвестны для этой модели"
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @discord.ui.button(label="Last Msg", style=discord.ButtonStyle.secondary, custom_id="panel_lastmsg", emoji="📨", row=1)
@@ -422,13 +433,13 @@ class ModelSelect(discord.ui.Select):
         super().__init__(placeholder="Выберите модель...", min_values=1, max_values=1, options=options)
 
     async def callback(self, interaction: discord.Interaction):
-        global CURRENT_AI_MODEL
+        global _dummy  # model stored in MongoDB
         if not any(role.id == OWNER_ROLE_ID for role in interaction.user.roles):
             return await interaction.response.send_message("❌ Нет прав.", ephemeral=True)
-        CURRENT_AI_MODEL = self.values[0]
-        m = MODELS_INFO.get(CURRENT_AI_MODEL, {})
-        label = m.get("label", CURRENT_AI_MODEL)
-        await interaction.response.send_message(f"✅ Модель изменена на **{label}** (`{CURRENT_AI_MODEL}`).", ephemeral=True)
+        set_current_model(self.values[0])
+        m = MODELS_INFO.get(get_current_model(), {})
+        label = m.get("label", get_current_model())
+        await interaction.response.send_message(f"✅ Модель изменена на **{label}** (`{get_current_model()}`).", ephemeral=True)
 
 class ModelSelectView(discord.ui.View):
     def __init__(self):
@@ -547,7 +558,7 @@ async def on_message(message):
                 success, answer_text = await ask_ai(message.author.id, prompt)
                 if not success:
                     await message.channel.send(
-                        f"❌ Ошибка Nexus AI (Модель: `{CURRENT_AI_MODEL}`): {answer_text}",
+                        f"❌ Ошибка Nexus AI (Модель: `{get_current_model()}`): {answer_text}",
                         delete_after=15
                     )
                     return
