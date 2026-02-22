@@ -1,6 +1,6 @@
 import discord
 from discord.ext import tasks, commands
-from discord.ui import Button, View
+from discord.ui import Button, View, Select
 import requests
 import json
 import os
@@ -20,15 +20,15 @@ DATA_FILE = 'data.json'
 
 # Ссылка на твой Вебхук и картинку
 AI_WEBHOOK_URL = "https://discord.com/api/webhooks/1475241998192738465/3oizxu-P-te46UHTQYspsI056qAUnT9TwwM8YDLeiJTQIx1VmoTdhdaZtiiNb4bMwjmO"
-AI_AVATAR_URL = "https://i.ibb.co/C3m2BskD/Nexus-AI-Icon.png" # Я загрузил твою картинку, чтобы она была доступна по ссылке
+AI_AVATAR_URL = "https://i.ibb.co/C3m2BskD/Nexus-AI-Icon.png" 
 
 # Твои ID Ролей
 ROLE_SCRIPT_ID = 1472108709059625034
 ROLE_EXECUTER_ID = 1472108653552337049
 ROLE_ROBLOX_ID = 1472108155138867251
+OWNER_ROLE_ID = 1467919040671387872 # Роль для смены моделей
 
-# --- НАСТРОЙКА ИИ GEMMA 3 ---
-# Получаем ключ и очищаем его от возможных пробелов/кавычек
+# --- НАСТРОЙКА ИИ ---
 RAW_AI_KEY = os.getenv('GEMMA_KEY')
 if RAW_AI_KEY:
     AI_KEY = RAW_AI_KEY.strip().replace('"', '').replace("'", "")
@@ -36,7 +36,6 @@ if RAW_AI_KEY:
 else:
     AI_KEY = None
 
-# Конфигурация модели
 generation_config = {
   "temperature": 0.8,
   "top_p": 0.95,
@@ -44,11 +43,10 @@ generation_config = {
   "max_output_tokens": 4096,
 }
 
-model = genai.GenerativeModel(
-  model_name="gemma-3-27b",
-  generation_config=generation_config,
-  system_instruction="Ты — Nexus AI. Ты очень дружелюбный и любишь использовать смайлики 😊. Ты эксперт в программировании и можешь написать любой код (Lua, Python, JS и т.д.), который попросит пользователь. Если в твоем ответе есть код, обязательно выделяй его в блоки кода с окантовкой: ```язык\nкод\n```."
-)
+SYSTEM_PROMPT = "Ты — Nexus AI. Ты очень дружелюбный и любишь использовать смайлики 😊. Ты эксперт в программировании и можешь написать любой код (Lua, Python, JS и т.д.), который попросит пользователь. Если в твоем ответе есть код, обязательно выделяй его в блоки кода с окантовкой: ```язык\nкод\n```."
+
+# Глобальная переменная для текущей модели
+CURRENT_AI_MODEL = "gemma-3-27b"
 
 # Список исключений для мониторинга
 EXCLUDE_LIST = ["RbxCli", "macexploit", "Severe", "Matcha", "Hydrogen", "DX9WARE V2", "Serotonin"]
@@ -112,7 +110,34 @@ last_msg_id = [current_data.get("last_msg_id")]
 version_history = current_data.get("history", [])
 exploit_msg_id = [current_data.get("exploit_msg_id")]
 
-# --- ВЬЮ КНОПОК ---
+# --- МЕНЮ ВЫБОРА МОДЕЛЕЙ (DROPDOWN) ---
+class ModelSelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(label="Gemma 3 27B", value="gemma-3-27b", emoji="🧠", description="Тяжелая и мощная (Other models)"),
+            discord.SelectOption(label="Gemma 3 12B", value="gemma-3-12b", emoji="🤖", description="Баланс скорости и качества"),
+            discord.SelectOption(label="Gemini 3 Flash", value="gemini-3-flash", emoji="⚡", description="Мощная новинка"),
+            discord.SelectOption(label="Gemini 2.5 Flash", value="gemini-2.5-flash", emoji="🔥", description="Супер быстрая"),
+            discord.SelectOption(label="Gemma 3 4B", value="gemma-3-4b", emoji="📱", description="Легкая"),
+            discord.SelectOption(label="Gemma 3 2B", value="gemma-3-2b", emoji="🔋", description="Ультра легкая")
+        ]
+        super().__init__(placeholder="Выберите активную модель ИИ...", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        global CURRENT_AI_MODEL
+        # Дополнительная проверка на права
+        if not any(role.id == OWNER_ROLE_ID for role in interaction.user.roles):
+            return await interaction.response.send_message("❌ У вас нет прав изменять модель!", ephemeral=True)
+        
+        CURRENT_AI_MODEL = self.values[0]
+        await interaction.response.send_message(f"✅ Модель успешно изменена на **{CURRENT_AI_MODEL}**! Все новые запросы пойдут через неё.", ephemeral=True)
+
+class ModelSelectView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=30) # Вьюха перестанет работать через 30 секунд
+        self.add_item(ModelSelect())
+
+# --- ВЬЮ КНОПОК ИСТОРИИ И РОЛЕЙ ---
 class HistoryView(View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -177,8 +202,28 @@ async def on_message(message):
     
     if message.channel.id == AI_CHANNEL_ID:
         ai_variants = ('?ai', '?аи')
-        limit_variants = ('?limit', '?лимит')
+        limit_variants = ('?limit', '?лимит', '?LIMIT')
+        models_variants = ('?models', '?model', '?модели')
+        setmodel_variants = ('?setmodels', '?setmodel', '?setmodel')
         
+        # 1. КОМАНДА ВЫБОРА МОДЕЛЕЙ (ТОЛЬКО ДЛЯ ВЛАДЕЛЬЦА)
+        if content.startswith(setmodel_variants):
+            try: await message.delete()
+            except: pass
+            
+            # Проверка наличия роли Owner
+            has_owner_role = any(role.id == OWNER_ROLE_ID for role in message.author.roles)
+            if not has_owner_role:
+                return # Если роли нет, просто игнорируем
+            
+            embed = discord.Embed(title="⚙️ Панель управления моделями ИИ", description="Выберите модель из выпадающего списка ниже. Окно исчезнет через 30 секунд.", color=0x2ecc71)
+            embed.set_footer(text=f"Текущая модель: {CURRENT_AI_MODEL}")
+            
+            view = ModelSelectView()
+            await message.channel.send(content=message.author.mention, embed=embed, view=view, delete_after=30)
+            return
+
+        # 2. ОСНОВНАЯ КОМАНДА ИИ
         if content.startswith(ai_variants):
             prompt = message.content[3:].strip()
             if not prompt: return
@@ -188,23 +233,51 @@ async def on_message(message):
 
             async with message.channel.typing():
                 try:
-                    response = model.generate_content(prompt)
+                    # Динамически создаем модель перед запросом
+                    current_model = genai.GenerativeModel(
+                        model_name=CURRENT_AI_MODEL,
+                        generation_config=generation_config,
+                        system_instruction=SYSTEM_PROMPT
+                    )
+                    
+                    response = current_model.generate_content(prompt)
                     full_answer = f"**Ответ для {message.author.mention}:**\n{response.text}"
                     
                     # Отправляем через вебхук
                     send_to_webhook(full_answer, "Nexus AI", AI_AVATAR_URL)
                     
                 except Exception as e:
-                    # Если ошибка — пишем её в канал обычным сообщением
-                    await message.channel.send(f"❌ Ошибка Nexus AI: {e}")
+                    # Если ошибка — пишем её в канал обычным сообщением, чтобы ты мог увидеть лог (например 404)
+                    await message.channel.send(f"❌ Ошибка Nexus AI (Модель: `{CURRENT_AI_MODEL}`): {e}", delete_after=15)
             return
 
+        # 3. ПОКАЗАТЬ ДОСТУПНЫЕ МОДЕЛИ (ДЛЯ ВСЕХ, НА 30 СЕК)
+        if content.startswith(models_variants):
+            try: await message.delete()
+            except: pass
+            embed = discord.Embed(title="🤖 Доступные модели Nexus AI", color=0x3498db)
+            embed.description = (
+                f"**Текущая активная модель:** `{CURRENT_AI_MODEL}`\n\n"
+                "**Список поддерживаемых из таблицы:**\n"
+                "• `gemma-3-27b` — Тяжелая модель\n"
+                "• `gemma-3-12b`\n"
+                "• `gemma-3-4b`\n"
+                "• `gemma-3-2b`\n"
+                "• `gemini-3-flash` — Очень быстрая\n"
+                "• `gemini-2.5-flash`\n"
+                "• `gemini-2.5-flash-native-audio-dialog`\n\n"
+                "*Сменить модель может только участник с ролью Owner.*"
+            )
+            await message.channel.send(content=f"{message.author.mention}", embed=embed, delete_after=30)
+            return
+
+        # 4. ЛИМИТЫ (ДЛЯ ВСЕХ, НА 30 СЕК)
         if content.startswith(limit_variants):
             try: await message.delete()
             except: pass
             embed = discord.Embed(title="📊 Nexus AI Limits", color=0x9b59b6)
-            embed.description = "• Model: **Gemma 3 27B**\n• Status: 🟢 Online\n• Requests: Unlimited (Best tier)\n• Context: 128k tokens"
-            await message.channel.send(embed=embed, delete_after=15)
+            embed.description = f"• Active Model: **{CURRENT_AI_MODEL}**\n• Status: 🟢 Online\n• Requests: Unlimited API Tier\n• Context: Variable (up to 1M)"
+            await message.channel.send(content=f"{message.author.mention}", embed=embed, delete_after=30)
             return
 
     await bot.process_commands(message)
