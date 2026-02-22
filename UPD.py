@@ -5,6 +5,7 @@ import requests
 import json
 import os
 import time
+import google.generativeai as genai # Добавлено для ИИ
 from flask import Flask, request, jsonify
 from threading import Thread
 
@@ -14,12 +15,31 @@ UPDATE_CHANNEL_ID = 1461974088334446704
 ROBLOX_CHANNEL_ID = 1467906321490641109 
 EXPLOIT_CHANNEL_ID = 1471880566306504754
 ROLE_CHANNEL_ID = 1472109649053356139  # Канал для выбора ролей
+AI_CHANNEL_ID = 1475235177818230964   # Канал для нейросети
 DATA_FILE = 'data.json'
 
 # Твои ID Ролей
 ROLE_SCRIPT_ID = 1472108709059625034
 ROLE_EXECUTER_ID = 1472108653552337049
 ROLE_ROBLOX_ID = 1472108155138867251
+
+# --- НАСТРОЙКА ИИ GEMMA 3 ---
+AI_KEY = "GEMMA_KEY"
+genai.configure(api_key=AI_KEY)
+
+# Конфигурация модели
+generation_config = {
+  "temperature": 0.8,
+  "top_p": 0.95,
+  "top_k": 40,
+  "max_output_tokens": 4096,
+}
+
+model = genai.GenerativeModel(
+  model_name="gemma-3-27b",
+  generation_config=generation_config,
+  system_instruction="Ты — Nexus AI. Ты очень дружелюбный и любишь использовать смайлики 😊. Ты эксперт в программировании и можешь написать любой код (Lua, Python, JS и т.д.), который попросит пользователь. Если в твоем ответе есть код, обязательно выделяй его в блоки кода с окантовкой: ```язык\nкод\n```."
+)
 
 # Список исключений для мониторинга
 EXCLUDE_LIST = ["RbxCli", "macexploit", "Severe", "Matcha", "Hydrogen", "DX9WARE V2", "Serotonin"]
@@ -94,7 +114,7 @@ class HistoryView(View):
             return await interaction.response.send_message("History is empty.", ephemeral=True)
         h_list = "**Last 10 recorded versions:**\n\n"
         for v in version_history[-10:]:
-            link = f"https://rdd.whatexpsare.online/?channel=LIVE&binaryType=WindowsPlayer&version={v}"
+            link = f"[https://rdd.whatexpsare.online/?channel=LIVE&binaryType=WindowsPlayer&version=](https://rdd.whatexpsare.online/?channel=LIVE&binaryType=WindowsPlayer&version=){v}"
             h_list += f"• `{v}` — [Download]({link})\n"
         await interaction.response.send_message(h_list, ephemeral=True)
 
@@ -129,6 +149,58 @@ class RoleView(View):
 # --- ИНИЦИАЛИЗАЦИЯ БОТА ---
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+# --- ОБРАБОТКА ИИ И НИКНЕЙМОВ ---
+@bot.event
+async def on_message(message):
+    if message.author == bot.user: return
+    
+    content = message.content.lower()
+    
+    # Логика для канала ИИ
+    if message.channel.id == AI_CHANNEL_ID:
+        # Меняем ник на Nexus AI в этом канале
+        try:
+            if message.guild.me.nick != "Nexus AI":
+                await message.guild.me.edit(nick="Nexus AI")
+        except: pass
+
+        # Команды ?ai, ?аи и их вариации
+        ai_variants = ('?ai', '?аи')
+        limit_variants = ('?limit', '?лимит')
+        
+        if content.startswith(ai_variants):
+            prompt = message.content[3:].strip()
+            if not prompt: return
+            
+            # Удаляем сообщение пользователя
+            try: await message.delete()
+            except: pass
+
+            async with message.channel.typing():
+                try:
+                    response = model.generate_content(prompt)
+                    await message.channel.send(f"**Ответ для {message.author.mention}:**\n{response.text}")
+                except Exception as e:
+                    await message.channel.send(f"❌ Ошибка Nexus AI: {e}")
+            return
+
+        if content.startswith(limit_variants):
+            try: await message.delete()
+            except: pass
+            embed = discord.Embed(title="📊 Nexus AI Limits", color=0x9b59b6)
+            embed.description = "• Model: **Gemma 3 27B**\n• Status: 🟢 Online\n• Requests: Unlimited (Best tier)\n• Context: 128k tokens"
+            await message.channel.send(embed=embed, delete_after=15)
+            return
+
+    else:
+        # Возвращаем дефолтный ник в других каналах
+        try:
+            if message.guild.me.nick != "Nexus Update":
+                await message.guild.me.edit(nick="Nexus Update")
+        except: pass
+
+    await bot.process_commands(message)
 
 # --- КОМАНДЫ ---
 @bot.command()
@@ -194,7 +266,7 @@ async def check_exploits():
 
     headers = {'User-Agent': 'WEAO-3PService'}
     try:
-        r = requests.get("https://weao.xyz/api/status/exploits", timeout=10, headers=headers)
+        r = requests.get("[https://weao.xyz/api/status/exploits](https://weao.xyz/api/status/exploits)", timeout=10, headers=headers)
         if r.status_code != 200: return
         data = r.json()
     except: return
@@ -234,7 +306,7 @@ async def check_exploits():
     save_data(last_versions["live"], last_versions["future"], last_msg_id[0], version_history, exploit_msg_id[0])
 
 def get_roblox_v(channel="live"):
-    url = f"https://clientsettings.roblox.com/v2/client-version/WindowsPlayer{'' if channel=='live' else '/channel/znext'}?t={int(time.time())}"
+    url = f"[https://clientsettings.roblox.com/v2/client-version/WindowsPlayer](https://clientsettings.roblox.com/v2/client-version/WindowsPlayer){'' if channel=='live' else '/channel/znext'}?t={int(time.time())}"
     try:
         r = requests.get(url, timeout=10, headers={'User-Agent': 'Mozilla/5.0'})
         return r.json().get("clientVersionUpload") if r.status_code == 200 else None
