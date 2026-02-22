@@ -82,42 +82,26 @@ SYSTEM_PROMPT = (
     "Код оборачивай в блоки: ```язык\nкод\n```."
 )
 
-CURRENT_AI_MODEL = "gemma-3-27b"
+CURRENT_AI_MODEL = "gemini-2.5-flash"
 MAX_HISTORY = 30
 
 # Информация о моделях: название, лимиты (requests/day, tokens/min)
 MODELS_INFO = {
-    "gemma-3-27b": {
-        "label": "Gemma 3 27B",
-        "call": "gemma-3-27b",
-        "rpm": 2,
-        "rpd": 50,
-        "tpm": 8000,
-        "desc": "Самая мощная локальная модель"
+    "gemini-2.5-flash": {
+        "label": "Gemini 2.5 Flash",
+        "call": "gemini-2.5-flash",
+        "rpm": 10,
+        "rpd": 500,
+        "tpm": 250000,
+        "desc": "Умная и быстрая — рекомендуется"
     },
-    "gemma-3-12b": {
-        "label": "Gemma 3 12B",
-        "call": "gemma-3-12b",
-        "rpm": 15,
+    "gemini-2.5-pro": {
+        "label": "Gemini 2.5 Pro",
+        "call": "gemini-2.5-pro",
+        "rpm": 5,
         "rpd": 100,
-        "tpm": 15000,
-        "desc": "Баланс скорости и качества"
-    },
-    "gemma-3-4b": {
-        "label": "Gemma 3 4B",
-        "call": "gemma-3-4b",
-        "rpm": 30,
-        "rpd": 300,
-        "tpm": 30000,
-        "desc": "Лёгкая и быстрая"
-    },
-    "gemma-3-2b": {
-        "label": "Gemma 3 2B",
-        "call": "gemma-3-2b",
-        "rpm": 30,
-        "rpd": 300,
-        "tpm": 30000,
-        "desc": "Ультра лёгкая"
+        "tpm": 250000,
+        "desc": "Самая мощная от Google"
     },
     "gemini-2.0-flash": {
         "label": "Gemini 2.0 Flash",
@@ -125,23 +109,31 @@ MODELS_INFO = {
         "rpm": 15,
         "rpd": 1500,
         "tpm": 1000000,
-        "desc": "Быстрая, большой контекст"
+        "desc": "Быстрая, огромный контекст"
     },
-    "gemini-2.5-flash-preview-05-20": {
-        "label": "Gemini 2.5 Flash",
-        "call": "gemini-2.5-flash-preview-05-20",
-        "rpm": 10,
-        "rpd": 500,
-        "tpm": 250000,
-        "desc": "Новейшая, очень умная"
+    "gemma-3-27b-it": {
+        "label": "Gemma 3 27B",
+        "call": "gemma-3-27b-it",
+        "rpm": 2,
+        "rpd": 50,
+        "tpm": 8000,
+        "desc": "Мощная локальная модель"
     },
-    "gemini-2.5-pro-preview-06-05": {
-        "label": "Gemini 2.5 Pro",
-        "call": "gemini-2.5-pro-preview-06-05",
-        "rpm": 5,
+    "gemma-3-12b-it": {
+        "label": "Gemma 3 12B",
+        "call": "gemma-3-12b-it",
+        "rpm": 15,
         "rpd": 100,
-        "tpm": 250000,
-        "desc": "Самая мощная от Google"
+        "tpm": 15000,
+        "desc": "Баланс скорости и качества"
+    },
+    "gemma-3-4b-it": {
+        "label": "Gemma 3 4B",
+        "call": "gemma-3-4b-it",
+        "rpm": 30,
+        "rpd": 300,
+        "tpm": 30000,
+        "desc": "Лёгкая и быстрая"
     },
 }
 
@@ -381,13 +373,12 @@ class AIPanelView(discord.ui.View):
 class ModelSelect(discord.ui.Select):
     def __init__(self):
         options = [
-            discord.SelectOption(label="Gemma 3 27B", value="gemma-3-27b", emoji="🧠", description="50 req/day • 8k tok/min"),
-            discord.SelectOption(label="Gemma 3 12B", value="gemma-3-12b", emoji="🤖", description="100 req/day • 15k tok/min"),
-            discord.SelectOption(label="Gemma 3 4B", value="gemma-3-4b", emoji="📱", description="300 req/day • 30k tok/min"),
-            discord.SelectOption(label="Gemma 3 2B", value="gemma-3-2b", emoji="🔋", description="300 req/day • 30k tok/min"),
-            discord.SelectOption(label="Gemini 2.0 Flash", value="gemini-2.0-flash", emoji="⚡", description="1500 req/day • 1M tok/min"),
-            discord.SelectOption(label="Gemini 2.5 Flash", value="gemini-2.5-flash-preview-05-20", emoji="🔥", description="500 req/day • 250k tok/min"),
-            discord.SelectOption(label="Gemini 2.5 Pro", value="gemini-2.5-pro-preview-06-05", emoji="👑", description="100 req/day • 250k tok/min"),
+            discord.SelectOption(label="Gemini 2.5 Flash", value="gemini-2.5-flash", emoji="🔥", description="Рекомендуется • 500 req/day"),
+            discord.SelectOption(label="Gemini 2.5 Pro", value="gemini-2.5-pro", emoji="👑", description="Самая мощная • 100 req/day"),
+            discord.SelectOption(label="Gemini 2.0 Flash", value="gemini-2.0-flash", emoji="⚡", description="Быстрая • 1500 req/day"),
+            discord.SelectOption(label="Gemma 3 27B", value="gemma-3-27b-it", emoji="🧠", description="Локальная мощная • 50 req/day"),
+            discord.SelectOption(label="Gemma 3 12B", value="gemma-3-12b-it", emoji="🤖", description="Баланс • 100 req/day"),
+            discord.SelectOption(label="Gemma 3 4B", value="gemma-3-4b-it", emoji="📱", description="Лёгкая • 300 req/day"),
         ]
         super().__init__(placeholder="Выберите модель...", min_values=1, max_values=1, options=options)
 
