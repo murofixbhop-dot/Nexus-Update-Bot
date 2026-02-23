@@ -83,14 +83,22 @@ groq_client = OpenAI(
 ) if GROQ_KEY else None
 
 GROQ_MODELS = {
+    # Production
     "llama-3.3-70b-versatile", "llama-3.1-8b-instant",
     "openai/gpt-oss-120b", "openai/gpt-oss-20b",
+    # Preview
     "meta-llama/llama-4-maverick-17b-128e-instruct",
     "meta-llama/llama-4-scout-17b-16e-instruct",
-    "deepseek-r1-distill-llama-70b", "deepseek-r1-distill-qwen-32b",
-    "qwen-qwq-32b", "qwen-2.5-32b", "qwen-2.5-coder-32b",
-    "gemma2-9b-it", "mixtral-8x7b-32768", "mistral-saba-24b",
+    "deepseek-r1-distill-llama-70b",
+    "qwen-qwq-32b",
+    "qwen/qwen3-32b",
+    "moonshotai/kimi-k2-instruct-0905",
+    # Compound (web search)
+    "groq/compound", "groq/compound-mini",
 }
+
+# Модели с реальным доступом в интернет (поиск встроен в API)
+WEB_SEARCH_MODELS = {"groq/compound", "groq/compound-mini"}
 
 SYSTEM_PROMPT = (
     "Ты — Nexus AI. Отвечай максимально коротко — 1-2 предложения если вопрос простой. "
@@ -123,18 +131,18 @@ def set_auto_mode(val: bool):
 AUTO_FALLBACK_ORDER = [
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
-    "gemini-2.0-flash",
     "llama-3.3-70b-versatile",
     "llama-3.1-8b-instant",
-    "gemini-3-flash-preview",
-    "openai/gpt-oss-120b",
+    "gemini-2.0-flash",
     "openai/gpt-oss-20b",
+    "openai/gpt-oss-120b",
+    "gemini-3-flash-preview",
+    "meta-llama/llama-4-scout-17b-16e-instruct",
     "meta-llama/llama-4-maverick-17b-128e-instruct",
     "deepseek-r1-distill-llama-70b",
+    "qwen/qwen3-32b",
     "qwen-qwq-32b",
-    "qwen-2.5-32b",
-    "mixtral-8x7b-32768",
-    "gemma2-9b-it",
+    "moonshotai/kimi-k2-instruct-0905",
 ]
 MAX_HISTORY = 30
 
@@ -232,44 +240,45 @@ MODELS_INFO = {
         "rpm": 30, "rpd": 1000, "tpm": 128000,
         "desc": "Reasoning: математика и код 🧠", "provider": "Groq"
     },
-    "deepseek-r1-distill-qwen-32b": {
-        "label": "DeepSeek R1 Qwen 32B", "call": "deepseek-r1-distill-qwen-32b",
-        "rpm": 30, "rpd": 1000, "tpm": 128000,
-        "desc": "Reasoning на базе Qwen", "provider": "Groq"
-    },
+
     # ===== GROQ — Qwen =====
     "qwen-qwq-32b": {
         "label": "Qwen QwQ 32B", "call": "qwen-qwq-32b",
         "rpm": 30, "rpd": 1000, "tpm": 131072,
         "desc": "Reasoning модель от Alibaba", "provider": "Groq"
     },
-    "qwen-2.5-32b": {
-        "label": "Qwen 2.5 32B", "call": "qwen-2.5-32b",
+
+
+
+    # ===== GROQ — Qwen (актуальные) =====
+    "qwen-qwq-32b": {
+        "label": "Qwen QwQ 32B", "call": "qwen-qwq-32b",
         "rpm": 30, "rpd": 1000, "tpm": 131072,
-        "desc": "Умная, хороша для текста", "provider": "Groq"
+        "desc": "Reasoning модель от Alibaba 🧠", "provider": "Groq"
     },
-    "qwen-2.5-coder-32b": {
-        "label": "Qwen 2.5 Coder 32B", "call": "qwen-2.5-coder-32b",
+    "qwen/qwen3-32b": {
+        "label": "Qwen3 32B 🆕", "call": "qwen/qwen3-32b",
         "rpm": 30, "rpd": 1000, "tpm": 131072,
-        "desc": "Специализирована на коде 💻", "provider": "Groq"
+        "desc": "Новейший Qwen3, 400 tok/s", "provider": "Groq"
     },
-    # ===== GROQ — Mistral & Mixtral =====
-    "mistral-saba-24b": {
-        "label": "Mistral Saba 24B", "call": "mistral-saba-24b",
-        "rpm": 30, "rpd": 1000, "tpm": 32768,
-        "desc": "Mistral, хороша для диалога", "provider": "Groq"
+    # ===== GROQ — Moonshot =====
+    "moonshotai/kimi-k2-instruct-0905": {
+        "label": "Kimi K2 🆕", "call": "moonshotai/kimi-k2-instruct-0905",
+        "rpm": 30, "rpd": 1000, "tpm": 262144,
+        "desc": "262K контекст, агентик 🌙", "provider": "Groq"
     },
-    "mixtral-8x7b-32768": {
-        "label": "Mixtral 8x7B", "call": "mixtral-8x7b-32768",
-        "rpm": 30, "rpd": 14400, "tpm": 32768,
-        "desc": "MoE, макс кол-во запросов", "provider": "Groq"
+    # ===== GROQ — Compound (с поиском в интернете) =====
+    "groq/compound": {
+        "label": "Compound 🌐 (поиск)", "call": "groq/compound",
+        "rpm": 30, "rpd": 1000, "tpm": 131072,
+        "desc": "Реальный поиск в интернете 🔍", "provider": "Groq"
     },
-    # ===== GROQ — Gemma =====
-    "gemma2-9b-it": {
-        "label": "Gemma 2 9B (Groq)", "call": "gemma2-9b-it",
-        "rpm": 30, "rpd": 14400, "tpm": 8192,
-        "desc": "Быстрая Gemma через Groq", "provider": "Groq"
+    "groq/compound-mini": {
+        "label": "Compound Mini 🌐 (поиск)", "call": "groq/compound-mini",
+        "rpm": 30, "rpd": 1000, "tpm": 131072,
+        "desc": "Поиск в интернете, быстрее", "provider": "Groq"
     },
+
 }
 
 EXCLUDE_LIST = ["RbxCli", "macexploit", "Severe", "Matcha", "Hydrogen", "DX9WARE V2", "Serotonin"]
@@ -368,6 +377,7 @@ async def _call_model(model_name: str, prompt: str, history: list) -> str:
     if is_groq:
         if not groq_client:
             raise ValueError("GROQ_KEY не задан")
+        is_compound = model_name in WEB_SEARCH_MODELS
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         for item in history[-(MAX_HISTORY - 2):]:
             role = "assistant" if item["role"] == "model" else "user"
@@ -377,7 +387,16 @@ async def _call_model(model_name: str, prompt: str, history: list) -> str:
             model=model_name, messages=messages,
             max_tokens=4096, temperature=0.8,
         )
-        return resp.choices[0].message.content
+        answer = resp.choices[0].message.content
+        # Проверяем использовался ли поиск
+        used_tools = getattr(resp.choices[0].message, "executed_tools", None) or []
+        did_search = any(
+            getattr(t, "type", "") in ("web_search", "browser_automation", "visit_website")
+            for t in used_tools
+        )
+        if did_search:
+            answer = "🔍 *[поиск в интернете]*\n" + answer
+        return answer
 
     if is_gemma:
         mdl = genai.GenerativeModel(model_name=model_name, generation_config=generation_config)
@@ -629,25 +648,28 @@ class ModelSelectGoogle(discord.ui.Select):
             return await interaction.response.send_message("❌ Нет прав.", ephemeral=True)
         set_current_model(self.values[0])
         m = MODELS_INFO.get(get_current_model(), {})
-        await interaction.response.send_message(f"✅ Модель: **{m.get('label', get_current_model())}**", ephemeral=True)
+        lbl = m.get("label", get_current_model())
+        web = " 🌐" if get_current_model() in WEB_SEARCH_MODELS else ""
+        # Показываем подтверждение и через 2с удаляем ephemeral-сообщение
+        await interaction.response.send_message(
+            f"✅ Модель: **{lbl}{web}**", ephemeral=True, delete_after=2
+        )
 
 class ModelSelectGroq(discord.ui.Select):
     def __init__(self):
         options = [
-            discord.SelectOption(label="Llama 3.3 70B", value="llama-3.3-70b-versatile", emoji="🦙", description="280 tok/s • 1000 req/day"),
-            discord.SelectOption(label="Llama 3.1 8B Instant", value="llama-3.1-8b-instant", emoji="💨", description="560 tok/s • 14400 req/day"),
+            discord.SelectOption(label="🔍 Compound (поиск в инете)", value="groq/compound", emoji="🌐", description="Реальный веб-поиск • 200 RPM"),
+            discord.SelectOption(label="🔎 Compound Mini (поиск)", value="groq/compound-mini", emoji="🌐", description="Поиск, быстрее • 200 RPM"),
+            discord.SelectOption(label="Llama 3.3 70B ⭐", value="llama-3.3-70b-versatile", emoji="🦙", description="Рекомендуется • 280 tok/s"),
+            discord.SelectOption(label="Llama 3.1 8B Instant", value="llama-3.1-8b-instant", emoji="💨", description="560 tok/s • макс запросов"),
             discord.SelectOption(label="Llama 4 Maverick 17B", value="meta-llama/llama-4-maverick-17b-128e-instruct", emoji="🦙", description="Новейший Llama 4"),
-            discord.SelectOption(label="Llama 4 Scout 17B", value="meta-llama/llama-4-scout-17b-16e-instruct", emoji="🔭", description="10M контекст"),
+            discord.SelectOption(label="Llama 4 Scout 17B", value="meta-llama/llama-4-scout-17b-16e-instruct", emoji="🔭", description="131K контекст"),
             discord.SelectOption(label="GPT-OSS 120B", value="openai/gpt-oss-120b", emoji="🤖", description="OpenAI open-weight • 500 tok/s"),
             discord.SelectOption(label="GPT-OSS 20B", value="openai/gpt-oss-20b", emoji="⚡", description="OpenAI лёгкая • 1000 tok/s"),
-            discord.SelectOption(label="DeepSeek R1 70B 🧠", value="deepseek-r1-distill-llama-70b", emoji="🧠", description="Reasoning: матем и код"),
-            discord.SelectOption(label="DeepSeek R1 Qwen 32B", value="deepseek-r1-distill-qwen-32b", emoji="🔍", description="Reasoning на Qwen"),
+            discord.SelectOption(label="DeepSeek R1 Llama 70B", value="deepseek-r1-distill-llama-70b", emoji="🧠", description="Reasoning: матем и код"),
             discord.SelectOption(label="Qwen QwQ 32B", value="qwen-qwq-32b", emoji="🌟", description="Reasoning от Alibaba"),
-            discord.SelectOption(label="Qwen 2.5 32B", value="qwen-2.5-32b", emoji="💬", description="Умная, хороша для текста"),
-            discord.SelectOption(label="Qwen 2.5 Coder 32B", value="qwen-2.5-coder-32b", emoji="💻", description="Специалист по коду"),
-            discord.SelectOption(label="Mixtral 8x7B", value="mixtral-8x7b-32768", emoji="🎭", description="MoE • 14400 req/day"),
-            discord.SelectOption(label="Mistral Saba 24B", value="mistral-saba-24b", emoji="🌊", description="Mistral диалог"),
-            discord.SelectOption(label="Gemma 2 9B (Groq)", value="gemma2-9b-it", emoji="📱", description="Быстрая • 14400 req/day"),
+            discord.SelectOption(label="Qwen3 32B 🆕", value="qwen/qwen3-32b", emoji="✨", description="Новейший Qwen3 • 400 tok/s"),
+            discord.SelectOption(label="Kimi K2 🆕", value="moonshotai/kimi-k2-instruct-0905", emoji="🌙", description="262K контекст"),
         ]
         super().__init__(placeholder="⚡ Groq модели...", min_values=1, max_values=1, options=options, custom_id="select_groq")
 
@@ -658,11 +680,47 @@ class ModelSelectGroq(discord.ui.Select):
         m = MODELS_INFO.get(get_current_model(), {})
         await interaction.response.send_message(f"✅ Модель: **{m.get('label', get_current_model())}** [Groq]", ephemeral=True)
 
+class AutoToggleButton(discord.ui.Button):
+    def __init__(self):
+        is_on = get_auto_mode()
+        super().__init__(
+            label=f"🔄 Авто: {'ВКЛ ✅' if is_on else 'ВЫКЛ ❌'}",
+            style=discord.ButtonStyle.success if is_on else discord.ButtonStyle.danger,
+            custom_id="modelview_auto",
+            row=2
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not any(role.id == OWNER_ROLE_ID for role in interaction.user.roles):
+            return await interaction.response.send_message("❌ Нет прав.", ephemeral=True)
+        new_state = not get_auto_mode()
+        set_auto_mode(new_state)
+        status = "✅ ВКЛ" if new_state else "❌ ВЫКЛ"
+        cur_label = MODELS_INFO.get(get_current_model(), {}).get("label", get_current_model())
+        desc = f"**Авто-режим {status}**\n\nОсновная модель: **{cur_label}**\n\n"
+        if new_state:
+            desc += "При лимите авто-переключается:\n"
+            for i, m in enumerate(AUTO_FALLBACK_ORDER[:8], 1):
+                lbl = MODELS_INFO.get(m, {}).get("label", m)
+                desc += f"{i}. {lbl}\n"
+            desc += "*(и далее...)*"
+        embed = discord.Embed(
+            title="🔄 Авто-режим моделей",
+            description=desc,
+            color=0x2ecc71 if new_state else 0xe74c3c
+        )
+        # Обновляем кнопку без закрытия меню
+        new_view = ModelSelectView()
+        await interaction.response.edit_message(view=new_view)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+
 class ModelSelectView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=60)
         self.add_item(ModelSelectGoogle())
         self.add_item(ModelSelectGroq())
+        self.add_item(AutoToggleButton())
 
 # --- КНОПКИ ИСТОРИИ И РОЛЕЙ ---
 class HistoryView(View):
