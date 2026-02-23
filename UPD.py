@@ -1414,7 +1414,7 @@ async def on_message(message):
         content = message.content.lower()
 
         # Команды !panel и !token — пропускаем в process_commands, не удаляем
-        if content.startswith('!panel') or content.startswith('!token') or content.startswith('!mymodel') or content.startswith('!myai'):
+        if content.startswith('!panel') or content.startswith('!token'):
             await bot.process_commands(message)
             return
 
