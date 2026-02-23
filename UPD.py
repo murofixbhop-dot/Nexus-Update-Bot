@@ -477,17 +477,17 @@ async def generate_image(prompt: str) -> bytes:
         }
     }
 
-    # Список моделей от быстрой к качественной
+    # Список моделей — новый endpoint router.huggingface.co
     MODELS = [
         "black-forest-labs/FLUX.1-schnell",
+        "black-forest-labs/FLUX.1-dev",
         "stabilityai/stable-diffusion-xl-base-1.0",
-        "runwayml/stable-diffusion-v1-5",
     ]
 
     last_err = None
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as session:
         for model in MODELS:
-            url = f"https://api-inference.huggingface.co/models/{model}"
+            url = f"https://router.huggingface.co/hf-inference/models/{model}"
             try:
                 async with session.post(url, headers=headers, json=payload) as resp:
                     if resp.status == 200:
