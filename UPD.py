@@ -83,12 +83,13 @@ groq_client = OpenAI(
 ) if GROQ_KEY else None
 
 GROQ_MODELS = {
-    "llama-3.3-70b-versatile",
-    "llama-3.1-8b-instant",
-    "deepseek-r1-distill-llama-70b",
-    "gemma2-9b-it",
-    "mixtral-8x7b-32768",
-    "qwen-qwq-32b",
+    "llama-3.3-70b-versatile", "llama-3.1-8b-instant",
+    "openai/gpt-oss-120b", "openai/gpt-oss-20b",
+    "meta-llama/llama-4-maverick-17b-128e-instruct",
+    "meta-llama/llama-4-scout-17b-16e-instruct",
+    "deepseek-r1-distill-llama-70b", "deepseek-r1-distill-qwen-32b",
+    "qwen-qwq-32b", "qwen-2.5-32b", "qwen-2.5-coder-32b",
+    "gemma2-9b-it", "mixtral-8x7b-32768", "mistral-saba-24b",
 }
 
 SYSTEM_PROMPT = (
@@ -115,102 +116,135 @@ MAX_HISTORY = 30
 
 # Информация о моделях: название, лимиты (requests/day, tokens/min)
 MODELS_INFO = {
+    # ===== GOOGLE GEMINI 3 (новейшие) =====
+    "gemini-3.1-pro-preview": {
+        "label": "Gemini 3.1 Pro Preview 🆕", "call": "gemini-3.1-pro-preview",
+        "rpm": 5, "rpd": 25, "tpm": 64000,
+        "desc": "Новейший, лучший reasoning 🏆", "provider": "Google"
+    },
+    "gemini-3-flash-preview": {
+        "label": "Gemini 3 Flash Preview 🆕", "call": "gemini-3-flash-preview",
+        "rpm": 10, "rpd": 100, "tpm": 250000,
+        "desc": "Gemini 3 скорость + умность", "provider": "Google"
+    },
+    # ===== GOOGLE GEMINI 2.5 =====
     "gemini-2.5-flash": {
-        "label": "Gemini 2.5 Flash",
-        "call": "gemini-2.5-flash",
-        "rpm": 10,
-        "rpd": 500,
-        "tpm": 250000,
-        "desc": "Умная и быстрая — рекомендуется"
+        "label": "Gemini 2.5 Flash ⭐", "call": "gemini-2.5-flash",
+        "rpm": 10, "rpd": 500, "tpm": 250000,
+        "desc": "Лучший баланс — рекомендуется", "provider": "Google"
+    },
+    "gemini-2.5-flash-lite": {
+        "label": "Gemini 2.5 Flash-Lite", "call": "gemini-2.5-flash-lite",
+        "rpm": 30, "rpd": 1500, "tpm": 1000000,
+        "desc": "Самая быстрая в 2.5", "provider": "Google"
     },
     "gemini-2.5-pro": {
-        "label": "Gemini 2.5 Pro",
-        "call": "gemini-2.5-pro",
-        "rpm": 5,
-        "rpd": 100,
-        "tpm": 250000,
-        "desc": "Самая мощная от Google"
+        "label": "Gemini 2.5 Pro", "call": "gemini-2.5-pro",
+        "rpm": 5, "rpd": 100, "tpm": 250000,
+        "desc": "Самая умная 2.5 👑", "provider": "Google"
     },
+    # ===== GOOGLE GEMINI 2.0 =====
     "gemini-2.0-flash": {
-        "label": "Gemini 2.0 Flash",
-        "call": "gemini-2.0-flash",
-        "rpm": 15,
-        "rpd": 1500,
-        "tpm": 1000000,
-        "desc": "Быстрая, огромный контекст"
+        "label": "Gemini 2.0 Flash", "call": "gemini-2.0-flash",
+        "rpm": 15, "rpd": 1500, "tpm": 1000000,
+        "desc": "1M контекст (deprecated 31.03.26)", "provider": "Google"
     },
+    "gemini-2.0-flash-lite": {
+        "label": "Gemini 2.0 Flash-Lite", "call": "gemini-2.0-flash-lite",
+        "rpm": 30, "rpd": 1500, "tpm": 1000000,
+        "desc": "Самая дешёвая 2.0 (deprecated)", "provider": "Google"
+    },
+    # ===== GOOGLE GEMMA =====
     "gemma-3-27b-it": {
-        "label": "Gemma 3 27B",
-        "call": "gemma-3-27b-it",
-        "rpm": 2,
-        "rpd": 50,
-        "tpm": 8000,
-        "desc": "Мощная локальная модель"
+        "label": "Gemma 3 27B", "call": "gemma-3-27b-it",
+        "rpm": 2, "rpd": 50, "tpm": 8000,
+        "desc": "Мощная open-source модель", "provider": "Google"
     },
     "gemma-3-12b-it": {
-        "label": "Gemma 3 12B",
-        "call": "gemma-3-12b-it",
-        "rpm": 15,
-        "rpd": 100,
-        "tpm": 15000,
-        "desc": "Баланс скорости и качества"
+        "label": "Gemma 3 12B", "call": "gemma-3-12b-it",
+        "rpm": 15, "rpd": 100, "tpm": 15000,
+        "desc": "Баланс скорости и качества", "provider": "Google"
     },
     "gemma-3-4b-it": {
-        "label": "Gemma 3 4B",
-        "call": "gemma-3-4b-it",
-        "rpm": 30,
-        "rpd": 300,
-        "tpm": 30000,
-        "desc": "Лёгкая и быстрая"
+        "label": "Gemma 3 4B", "call": "gemma-3-4b-it",
+        "rpm": 30, "rpd": 300, "tpm": 30000,
+        "desc": "Лёгкая и быстрая", "provider": "Google"
     },
-    # --- GROQ (нужен GROQ_KEY) ---
+    # ===== GROQ — Meta Llama =====
     "llama-3.3-70b-versatile": {
-        "label": "Llama 3.3 70B (Groq)",
-        "call": "llama-3.3-70b-versatile",
-        "rpm": 30,
-        "rpd": 1000,
-        "tpm": 12000,
-        "desc": "Мощная, очень быстрая [Groq]"
+        "label": "Llama 3.3 70B", "call": "llama-3.3-70b-versatile",
+        "rpm": 30, "rpd": 1000, "tpm": 131072,
+        "desc": "Мощная, 280 tok/s ⚡", "provider": "Groq"
     },
     "llama-3.1-8b-instant": {
-        "label": "Llama 3.1 8B (Groq)",
-        "call": "llama-3.1-8b-instant",
-        "rpm": 30,
-        "rpd": 14400,
-        "tpm": 20000,
-        "desc": "Ультра быстрая, много запросов [Groq]"
+        "label": "Llama 3.1 8B Instant", "call": "llama-3.1-8b-instant",
+        "rpm": 30, "rpd": 14400, "tpm": 131072,
+        "desc": "560 tok/s, макс запросов 💨", "provider": "Groq"
     },
+    "meta-llama/llama-4-maverick-17b-128e-instruct": {
+        "label": "Llama 4 Maverick 17B", "call": "meta-llama/llama-4-maverick-17b-128e-instruct",
+        "rpm": 30, "rpd": 1000, "tpm": 131072,
+        "desc": "Новейший Llama 4, мультимодал", "provider": "Groq"
+    },
+    "meta-llama/llama-4-scout-17b-16e-instruct": {
+        "label": "Llama 4 Scout 17B", "call": "meta-llama/llama-4-scout-17b-16e-instruct",
+        "rpm": 30, "rpd": 1000, "tpm": 131072,
+        "desc": "Llama 4, 10M токен контекст", "provider": "Groq"
+    },
+    # ===== GROQ — OpenAI OSS =====
+    "openai/gpt-oss-120b": {
+        "label": "GPT-OSS 120B", "call": "openai/gpt-oss-120b",
+        "rpm": 30, "rpd": 1000, "tpm": 131072,
+        "desc": "OpenAI open-weight ~500 tok/s 🔥", "provider": "Groq"
+    },
+    "openai/gpt-oss-20b": {
+        "label": "GPT-OSS 20B", "call": "openai/gpt-oss-20b",
+        "rpm": 30, "rpd": 1000, "tpm": 131072,
+        "desc": "OpenAI лёгкая ~1000 tok/s", "provider": "Groq"
+    },
+    # ===== GROQ — DeepSeek =====
     "deepseek-r1-distill-llama-70b": {
-        "label": "DeepSeek R1 70B (Groq)",
-        "call": "deepseek-r1-distill-llama-70b",
-        "rpm": 30,
-        "rpd": 1000,
-        "tpm": 6000,
-        "desc": "Рассуждения, математика, код [Groq]"
+        "label": "DeepSeek R1 Llama 70B", "call": "deepseek-r1-distill-llama-70b",
+        "rpm": 30, "rpd": 1000, "tpm": 128000,
+        "desc": "Reasoning: математика и код 🧠", "provider": "Groq"
     },
+    "deepseek-r1-distill-qwen-32b": {
+        "label": "DeepSeek R1 Qwen 32B", "call": "deepseek-r1-distill-qwen-32b",
+        "rpm": 30, "rpd": 1000, "tpm": 128000,
+        "desc": "Reasoning на базе Qwen", "provider": "Groq"
+    },
+    # ===== GROQ — Qwen =====
     "qwen-qwq-32b": {
-        "label": "Qwen QwQ 32B (Groq)",
-        "call": "qwen-qwq-32b",
-        "rpm": 30,
-        "rpd": 1000,
-        "tpm": 6000,
-        "desc": "Умная reasoning модель [Groq]"
+        "label": "Qwen QwQ 32B", "call": "qwen-qwq-32b",
+        "rpm": 30, "rpd": 1000, "tpm": 131072,
+        "desc": "Reasoning модель от Alibaba", "provider": "Groq"
+    },
+    "qwen-2.5-32b": {
+        "label": "Qwen 2.5 32B", "call": "qwen-2.5-32b",
+        "rpm": 30, "rpd": 1000, "tpm": 131072,
+        "desc": "Умная, хороша для текста", "provider": "Groq"
+    },
+    "qwen-2.5-coder-32b": {
+        "label": "Qwen 2.5 Coder 32B", "call": "qwen-2.5-coder-32b",
+        "rpm": 30, "rpd": 1000, "tpm": 131072,
+        "desc": "Специализирована на коде 💻", "provider": "Groq"
+    },
+    # ===== GROQ — Mistral & Mixtral =====
+    "mistral-saba-24b": {
+        "label": "Mistral Saba 24B", "call": "mistral-saba-24b",
+        "rpm": 30, "rpd": 1000, "tpm": 32768,
+        "desc": "Mistral, хороша для диалога", "provider": "Groq"
     },
     "mixtral-8x7b-32768": {
-        "label": "Mixtral 8x7B (Groq)",
-        "call": "mixtral-8x7b-32768",
-        "rpm": 30,
-        "rpd": 14400,
-        "tpm": 5000,
-        "desc": "Быстрая, большой контекст [Groq]"
+        "label": "Mixtral 8x7B", "call": "mixtral-8x7b-32768",
+        "rpm": 30, "rpd": 14400, "tpm": 32768,
+        "desc": "MoE, макс кол-во запросов", "provider": "Groq"
     },
+    # ===== GROQ — Gemma =====
     "gemma2-9b-it": {
-        "label": "Gemma 2 9B (Groq)",
-        "call": "gemma2-9b-it",
-        "rpm": 30,
-        "rpd": 14400,
-        "tpm": 15000,
-        "desc": "Быстрая Gemma через Groq [Groq]"
+        "label": "Gemma 2 9B (Groq)", "call": "gemma2-9b-it",
+        "rpm": 30, "rpd": 14400, "tpm": 8192,
+        "desc": "Быстрая Gemma через Groq", "provider": "Groq"
     },
 }
 
@@ -425,14 +459,18 @@ class AIPanelView(discord.ui.View):
         if not self.is_owner(interaction):
             return await interaction.response.send_message("❌ Только для Owner.", ephemeral=True)
         embed = discord.Embed(title="🤖 Все доступные модели Nexus AI", color=0x3498db)
-        desc = f"**Активная сейчас:** `{get_current_model()}`\n\n"
-        desc += "Как вызвать: `?ai ваш вопрос` — бот использует активную модель.\n\n"
+        cur = get_current_model()
+        m_cur = MODELS_INFO.get(cur, {})
+        desc = f"**Активная:** `{m_cur.get('label', cur)}` ({m_cur.get('provider','?')})`\n\n"
+        desc += "**🌐 Google:**\n"
         for key, m in MODELS_INFO.items():
-            desc += f"**{m['label']}**\n"
-            desc += f"┣ Вызов в коде: `{m['call']}`\n"
-            desc += f"┣ {m['desc']}\n"
-            desc += f"┗ Лимиты: {m['rpm']} req/min • {m['rpd']} req/day • {m['tpm']:,} tok/min\n\n"
-        embed.description = desc
+            if m.get("provider") == "Google":
+                desc += f"• **{m['label']}** — {m['desc']} | `{m['rpd']}` req/day\n"
+        desc += "\n**⚡ Groq:**\n"
+        for key, m in MODELS_INFO.items():
+            if m.get("provider") == "Groq":
+                desc += f"• **{m['label']}** — {m['desc']} | `{m['rpd']}` req/day\n"
+        embed.description = desc[:4000]
         embed.set_footer(text="Сменить модель может только Owner через кнопку Set Model")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -486,35 +524,60 @@ class AIPanelView(discord.ui.View):
         await interaction.response.send_message(result, ephemeral=True)
 
 # --- МЕНЮ МОДЕЛЕЙ ---
-class ModelSelect(discord.ui.Select):
+class ModelSelectGoogle(discord.ui.Select):
     def __init__(self):
         options = [
-            discord.SelectOption(label="Gemini 2.5 Flash", value="gemini-2.5-flash", emoji="🔥", description="Google • 500 req/day"),
-            discord.SelectOption(label="Gemini 2.5 Pro", value="gemini-2.5-pro", emoji="👑", description="Google • 100 req/day"),
-            discord.SelectOption(label="Gemini 2.0 Flash", value="gemini-2.0-flash", emoji="⚡", description="Google • 1500 req/day"),
-            discord.SelectOption(label="Llama 3.3 70B", value="llama-3.3-70b-versatile", emoji="🦙", description="Groq • 1000 req/day"),
-            discord.SelectOption(label="DeepSeek R1 70B", value="deepseek-r1-distill-llama-70b", emoji="🧠", description="Groq • умная reasoning"),
-            discord.SelectOption(label="Qwen QwQ 32B", value="qwen-qwq-32b", emoji="🌟", description="Groq • reasoning"),
-            discord.SelectOption(label="Llama 3.1 8B Fast", value="llama-3.1-8b-instant", emoji="💨", description="Groq • 14400 req/day"),
-            discord.SelectOption(label="Mixtral 8x7B", value="mixtral-8x7b-32768", emoji="🎭", description="Groq • 14400 req/day"),
-            discord.SelectOption(label="Gemma 2 9B", value="gemma2-9b-it", emoji="📱", description="Groq • 14400 req/day"),
-            discord.SelectOption(label="Gemma 3 27B", value="gemma-3-27b-it", emoji="🤖", description="Google • 50 req/day"),
+            discord.SelectOption(label="Gemini 3.1 Pro Preview 🆕", value="gemini-3.1-pro-preview", emoji="🏆", description="Новейший • 25 req/day"),
+            discord.SelectOption(label="Gemini 3 Flash Preview 🆕", value="gemini-3-flash-preview", emoji="🌟", description="Gemini 3 быстрый • 100 req/day"),
+            discord.SelectOption(label="Gemini 2.5 Flash ⭐", value="gemini-2.5-flash", emoji="🔥", description="Рекомендуется • 500 req/day"),
+            discord.SelectOption(label="Gemini 2.5 Flash-Lite", value="gemini-2.5-flash-lite", emoji="💨", description="Самая быстрая • 1500 req/day"),
+            discord.SelectOption(label="Gemini 2.5 Pro", value="gemini-2.5-pro", emoji="👑", description="Умная 2.5 • 100 req/day"),
+            discord.SelectOption(label="Gemini 2.0 Flash", value="gemini-2.0-flash", emoji="⚡", description="1M контекст • 1500 req/day"),
+            discord.SelectOption(label="Gemma 3 27B", value="gemma-3-27b-it", emoji="🧬", description="Open-source • 50 req/day"),
+            discord.SelectOption(label="Gemma 3 12B", value="gemma-3-12b-it", emoji="🔬", description="Баланс • 100 req/day"),
+            discord.SelectOption(label="Gemma 3 4B", value="gemma-3-4b-it", emoji="📱", description="Лёгкая • 300 req/day"),
         ]
-        super().__init__(placeholder="Выберите модель...", min_values=1, max_values=1, options=options)
+        super().__init__(placeholder="🌐 Google модели...", min_values=1, max_values=1, options=options, custom_id="select_google")
 
     async def callback(self, interaction: discord.Interaction):
-        global _dummy  # model stored in MongoDB
         if not any(role.id == OWNER_ROLE_ID for role in interaction.user.roles):
             return await interaction.response.send_message("❌ Нет прав.", ephemeral=True)
         set_current_model(self.values[0])
         m = MODELS_INFO.get(get_current_model(), {})
-        label = m.get("label", get_current_model())
-        await interaction.response.send_message(f"✅ Модель изменена на **{label}** (`{get_current_model()}`).", ephemeral=True)
+        await interaction.response.send_message(f"✅ Модель: **{m.get('label', get_current_model())}**", ephemeral=True)
+
+class ModelSelectGroq(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(label="Llama 3.3 70B", value="llama-3.3-70b-versatile", emoji="🦙", description="280 tok/s • 1000 req/day"),
+            discord.SelectOption(label="Llama 3.1 8B Instant", value="llama-3.1-8b-instant", emoji="💨", description="560 tok/s • 14400 req/day"),
+            discord.SelectOption(label="Llama 4 Maverick 17B", value="meta-llama/llama-4-maverick-17b-128e-instruct", emoji="🦙", description="Новейший Llama 4"),
+            discord.SelectOption(label="Llama 4 Scout 17B", value="meta-llama/llama-4-scout-17b-16e-instruct", emoji="🔭", description="10M контекст"),
+            discord.SelectOption(label="GPT-OSS 120B", value="openai/gpt-oss-120b", emoji="🤖", description="OpenAI open-weight • 500 tok/s"),
+            discord.SelectOption(label="GPT-OSS 20B", value="openai/gpt-oss-20b", emoji="⚡", description="OpenAI лёгкая • 1000 tok/s"),
+            discord.SelectOption(label="DeepSeek R1 70B 🧠", value="deepseek-r1-distill-llama-70b", emoji="🧠", description="Reasoning: матем и код"),
+            discord.SelectOption(label="DeepSeek R1 Qwen 32B", value="deepseek-r1-distill-qwen-32b", emoji="🔍", description="Reasoning на Qwen"),
+            discord.SelectOption(label="Qwen QwQ 32B", value="qwen-qwq-32b", emoji="🌟", description="Reasoning от Alibaba"),
+            discord.SelectOption(label="Qwen 2.5 32B", value="qwen-2.5-32b", emoji="💬", description="Умная, хороша для текста"),
+            discord.SelectOption(label="Qwen 2.5 Coder 32B", value="qwen-2.5-coder-32b", emoji="💻", description="Специалист по коду"),
+            discord.SelectOption(label="Mixtral 8x7B", value="mixtral-8x7b-32768", emoji="🎭", description="MoE • 14400 req/day"),
+            discord.SelectOption(label="Mistral Saba 24B", value="mistral-saba-24b", emoji="🌊", description="Mistral диалог"),
+            discord.SelectOption(label="Gemma 2 9B (Groq)", value="gemma2-9b-it", emoji="📱", description="Быстрая • 14400 req/day"),
+        ]
+        super().__init__(placeholder="⚡ Groq модели...", min_values=1, max_values=1, options=options, custom_id="select_groq")
+
+    async def callback(self, interaction: discord.Interaction):
+        if not any(role.id == OWNER_ROLE_ID for role in interaction.user.roles):
+            return await interaction.response.send_message("❌ Нет прав.", ephemeral=True)
+        set_current_model(self.values[0])
+        m = MODELS_INFO.get(get_current_model(), {})
+        await interaction.response.send_message(f"✅ Модель: **{m.get('label', get_current_model())}** [Groq]", ephemeral=True)
 
 class ModelSelectView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=60)
-        self.add_item(ModelSelect())
+        self.add_item(ModelSelectGoogle())
+        self.add_item(ModelSelectGroq())
 
 # --- КНОПКИ ИСТОРИИ И РОЛЕЙ ---
 class HistoryView(View):
