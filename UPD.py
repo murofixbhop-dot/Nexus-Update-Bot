@@ -113,20 +113,26 @@ GROQ_MODELS = {
 WEB_SEARCH_MODELS = {"groq/compound", "groq/compound-mini"}
 
 _SYSTEM_BASE = (
-    "Ты — Nexus AI. Отвечай максимально коротко — 1-2 предложения если вопрос простой. "
-    "Никаких вступлений, не повторяй вопрос, без лишних слов. "
+    "Ты — Nexus AI, универсальный ИИ-ассистент. "
+    "Отвечай коротко и по делу — 1-3 предложения для простых вопросов, подробно для сложных. "
+    "Никаких вступлений типа 'Конечно!' или 'Отличный вопрос!', не повторяй вопрос. "
     "Смайлики только если очень уместно. "
-    "Код пиши полностью, ничего не обрезай и не удаляй из предыдущего кода если не просили. "
-    "Код оборачивай в блоки: ```язык\nкод\n```. "
+    "Код пиши полностью — никогда не обрезай, не пропускай части, не пиши 'остальное без изменений'. "
+    "Код всегда оборачивай в блоки: ```язык\nкод\n```. "
+    "Ты умеешь писать код на любом языке: Python, C++, C#, Java, JavaScript, Go, Rust, и других. "
+    "Ты умеешь создавать GUI-программы, веб-приложения, игры, скрипты — всё что угодно. "
+    "Никогда не говори что не можешь что-то написать или создать — ты можешь написать любой код. "
+    "Если просят GUI на C++ — пиши с Qt или WinAPI. На Python — tkinter/PyQt/Dear PyGui. "
 )
 # Для обычных моделей — без интернета
 SYSTEM_PROMPT = _SYSTEM_BASE + (
-    "У тебя нет доступа в интернет. Если просят что-то поискать — честно скажи об этом и ответь из своих знаний. "
-    "Никогда не придумывай ссылки и не симулируй поиск."
+    "У тебя нет прямого доступа в интернет, но ты знаешь очень много из тренировочных данных. "
+    "Если просят актуальную информацию — предупреди что данные могут быть устаревшими и ответь из своих знаний. "
+    "Никогда не придумывай ссылки."
 )
 # Для Compound — есть интернет
 SYSTEM_PROMPT_WEB = _SYSTEM_BASE + (
-    "У тебя ЕСТЬ доступ в интернет через встроенный поиск — используй его когда нужна актуальная информация. "
+    "У тебя ЕСТЬ доступ в интернет через встроенный поиск — используй его для актуальной информации. "
     "Никогда не придумывай ссылки — только реальные из поиска."
 )
 
@@ -415,62 +421,35 @@ async def send_file_to_webhook(file_bytes, filename, caption, username, avatar_u
 GEMMA_MODELS = {"gemma-3-27b-it", "gemma-3-12b-it", "gemma-3-4b-it"}
 
 async def generate_image(prompt: str) -> bytes:
-    """Генерация изображения через Gemini (бесплатный tier). Возвращает bytes."""
+    """Генерация изображения через Gemini 2.0 Flash (бесплатный tier)."""
     if not AI_KEY:
         raise ValueError("GEMMA_KEY не задан")
 
     loop = asyncio.get_event_loop()
 
     def _gen():
-        import google.generativeai as _genai
-        from google.generativeai import types as _t
-        _genai.configure(api_key=AI_KEY)
+        # Используем новый SDK google-genai (pip install google-genai)
+        if not HAS_NEW_GENAI:
+            raise ValueError("Установи пакет google-genai: pip install google-genai")
 
-        # Пробуем по очереди модели с поддержкой генерации изображений
-        models_to_try = [
-            "gemini-2.0-flash-exp-image-generation",
-            "gemini-2.0-flash-exp",
-        ]
-        last_err = None
-        for model_id in models_to_try:
+        client = genai_new.Client(api_key=AI_KEY)
+        # gemini-2.0-flash-exp поддерживает генерацию картинок бесплатно
+        for model_id in ["gemini-2.0-flash-exp-image-generation", "gemini-2.0-flash-exp"]:
             try:
-                model = _genai.GenerativeModel(model_id)
-                resp = model.generate_content(
-                    f"Generate an image: {prompt}",
-                    generation_config=_t.GenerationConfig(
+                resp = client.models.generate_content(
+                    model=model_id,
+                    contents=prompt,
+                    config=genai_new_types.GenerateContentConfig(
                         response_modalities=["IMAGE", "TEXT"],
                     )
                 )
                 for part in resp.candidates[0].content.parts:
-                    if hasattr(part, "inline_data") and part.inline_data and part.inline_data.data:
+                    if part.inline_data and part.inline_data.data:
                         return part.inline_data.data
             except Exception as e:
                 last_err = e
                 continue
-
-        # Если Gemini не дал изображение — пробуем новый SDK с Imagen
-        if HAS_NEW_GENAI:
-            try:
-                client = genai_new.Client(api_key=AI_KEY)
-                for img_model in ["imagen-3.0-generate-002", "imagen-3.0-fast-generate-001"]:
-                    try:
-                        result = client.models.generate_images(
-                            model=img_model,
-                            prompt=prompt,
-                            config=genai_new_types.GenerateImagesConfig(
-                                number_of_images=1,
-                                output_mime_type="image/jpeg",
-                            )
-                        )
-                        if result.generated_images:
-                            return result.generated_images[0].image.image_bytes
-                    except Exception as e:
-                        last_err = e
-                        continue
-            except Exception as e:
-                last_err = e
-
-        raise ValueError(f"Не удалось сгенерировать изображение: {last_err}")
+        raise ValueError(f"Модели не вернули изображение. Последняя ошибка: {last_err}")
 
     return await loop.run_in_executor(None, _gen)
 
@@ -1115,44 +1094,30 @@ async def on_message(message):
                 return
 
             lang, code = extract_code_info(answer_text)
-            caption = f"**Ответ для {message.author.mention}:**"
+            mention = message.author.mention
             text_only = re.sub(r"```[\w]*\n[\s\S]*?```", "", answer_text).strip()
 
-            async def _send_answer():
-                """Отправить ответ через вебхук, при ошибке — через channel.send."""
-                if code:
-                    if len(code) < 300:
-                        ext, _ = get_file_info(lang)
-                        inline = f"```{lang or ext}\n{code}\n```"
-                        msg_text = (text_only + "\n" + inline) if text_only else inline
-                        full = f"{caption}\n{msg_text}"
-                        chunks = [full[i:i+1990] for i in range(0, len(full), 1990)]
-                        ok = True
-                        for chunk in chunks:
-                            sent = await send_to_webhook(chunk, "Nexus AI", AI_AVATAR_URL)
-                            if not sent:
-                                ok = False
-                        if not ok:
-                            await message.channel.send(full[:1990])
-                    else:
-                        ext, label = get_file_info(lang)
-                        fname = f"{label}.{ext}"
-                        cap2 = (caption + "\n" + text_only + "\n*(Код — файлом)*") if text_only else (caption + "\n*(Код — файлом)*")
-                        sent = await send_file_to_webhook(code.encode("utf-8"), fname, cap2, "Nexus AI", AI_AVATAR_URL)
-                        if not sent:
-                            await message.channel.send(cap2, file=discord.File(fp=io.BytesIO(code.encode()), filename=fname))
+            if code:
+                if len(code) < 1500:
+                    ext, _ = get_file_info(lang)
+                    inline = f"```{lang or ext}\n{code}\n```"
+                    body = (text_only + "\n" + inline) if text_only else inline
+                    full = f"{mention}\n{body}"
+                    # Бьём на куски если длинно
+                    for i in range(0, len(full), 1990):
+                        await message.channel.send(full[i:i+1990])
                 else:
-                    full_answer = f"{caption}\n{answer_text}"
-                    chunks = [full_answer[i:i+1990] for i in range(0, len(full_answer), 1990)]
-                    ok = True
-                    for chunk in chunks:
-                        sent = await send_to_webhook(chunk, "Nexus AI", AI_AVATAR_URL)
-                        if not sent:
-                            ok = False
-                    if not ok:
-                        await message.channel.send(full_answer[:1990])
-
-            await _send_answer()
+                    ext, label = get_file_info(lang)
+                    fname = f"{label}.{ext}"
+                    header = f"{mention}\n{text_only}" if text_only else mention
+                    await message.channel.send(
+                        header + "\n*(Код отправлен файлом)*",
+                        file=discord.File(fp=io.BytesIO(code.encode("utf-8")), filename=fname)
+                    )
+            else:
+                full_answer = f"{mention}\n{answer_text}"
+                for i in range(0, len(full_answer), 1990):
+                    await message.channel.send(full_answer[i:i+1990])
             return
 
         # ?img команда — генерация изображения
@@ -1162,22 +1127,20 @@ async def on_message(message):
                 try: await message.delete()
                 except: pass
                 return
+            try:
+                await message.delete()
+            except:
+                pass
             async with message.channel.typing():
                 try:
-                    await message.delete()
-                except:
-                    pass
-                try:
                     img_bytes = await generate_image(img_prompt)
-                    file = discord.File(fp=io.BytesIO(img_bytes), filename="nexus_ai.png")
-                    await send_to_webhook(
-                        f"🎨 **{message.author.mention}** — *{img_prompt[:100]}*",
-                        "Nexus AI", AI_AVATAR_URL
+                    await message.channel.send(
+                        f"🎨 {message.author.mention} — *{img_prompt[:100]}*",
+                        file=discord.File(fp=io.BytesIO(img_bytes), filename="nexus_ai.png")
                     )
-                    await message.channel.send(file=file)
                 except Exception as e:
                     await message.channel.send(
-                        f"❌ Ошибка генерации изображения: {e}", delete_after=15
+                        f"❌ {message.author.mention} Ошибка генерации: {e}", delete_after=20
                     )
             return
 
