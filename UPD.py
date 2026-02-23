@@ -573,30 +573,6 @@ class AIPanelView(discord.ui.View):
             embed.description = f"• Модель: **{get_current_model()}**\n• Статус: 🟢 Online\n• Лимиты: неизвестны для этой модели"
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @discord.ui.button(label="Авто", style=discord.ButtonStyle.secondary, custom_id="panel_auto", emoji="🔄", row=2)
-    async def auto_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self.is_owner(interaction):
-            return await interaction.response.send_message("❌ Только для Owner.", ephemeral=True)
-        new_state = not get_auto_mode()
-        set_auto_mode(new_state)
-        status = "✅ включён" if new_state else "❌ выключен"
-        desc = (
-            f"**Авто-режим {status}**\n\n"
-            f"Текущая основная модель: `{MODELS_INFO.get(get_current_model(), {}).get('label', get_current_model())}`\n\n"
-        )
-        if new_state:
-            desc += "При лимите автоматически переключается на следующую:\n"
-            for i, m in enumerate(AUTO_FALLBACK_ORDER[:8], 1):
-                label = MODELS_INFO.get(m, {}).get("label", m)
-                desc += f"{i}. {label}\n"
-            desc += "*(и далее...)*"
-        embed = discord.Embed(
-            title="🔄 Авто-режим моделей",
-            description=desc,
-            color=0x2ecc71 if new_state else 0xe74c3c
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
     @discord.ui.button(label="Last Msg", style=discord.ButtonStyle.secondary, custom_id="panel_lastmsg", emoji="📨", row=1)
     async def lastmsg_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         uid = interaction.user.id
@@ -650,10 +626,13 @@ class ModelSelectGoogle(discord.ui.Select):
         m = MODELS_INFO.get(get_current_model(), {})
         lbl = m.get("label", get_current_model())
         web = " 🌐" if get_current_model() in WEB_SEARCH_MODELS else ""
-        # Показываем подтверждение и через 2с удаляем ephemeral-сообщение
-        await interaction.response.send_message(
-            f"✅ Модель: **{lbl}{web}**", ephemeral=True, delete_after=2
+        # Закрываем меню редактируя сообщение без view, потом подтверждение
+        await interaction.response.edit_message(
+            content=f"✅ Выбрана: **{lbl}{web}**",
+            embed=None,
+            view=None
         )
+        await interaction.delete_original_response()
 
 class ModelSelectGroq(discord.ui.Select):
     def __init__(self):
@@ -678,7 +657,14 @@ class ModelSelectGroq(discord.ui.Select):
             return await interaction.response.send_message("❌ Нет прав.", ephemeral=True)
         set_current_model(self.values[0])
         m = MODELS_INFO.get(get_current_model(), {})
-        await interaction.response.send_message(f"✅ Модель: **{m.get('label', get_current_model())}** [Groq]", ephemeral=True)
+        lbl = m.get("label", get_current_model())
+        web = " 🌐" if get_current_model() in WEB_SEARCH_MODELS else ""
+        await interaction.response.edit_message(
+            content=f"✅ Выбрана: **{lbl}{web}** [Groq]",
+            embed=None,
+            view=None
+        )
+        await interaction.delete_original_response()
 
 class AutoToggleButton(discord.ui.Button):
     def __init__(self):
@@ -801,7 +787,7 @@ async def ensure_ai_panel(channel):
             "🤖 **Модели** — все доступные модели *(Owner)*\n"
             "📊 **Лимиты** — лимиты активной модели *(Owner)*\n"
             "📨 **Last Msg** — твой последний ответ от ИИ\n"
-            "🔄 **Авто** — вкл/выкл авто-переключение моделей *(Owner)*\n\n"
+            "\n"
             "*ИИ помнит историю отдельно для каждого пользователя.*"
         ),
         color=0x00FBFF
