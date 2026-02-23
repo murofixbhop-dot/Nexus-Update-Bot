@@ -11,7 +11,14 @@ import asyncio
 import aiohttp
 import base64
 import google.generativeai as genai
-from google.generativeai import types as genai_types
+try:
+    from google import genai as genai_new
+    from google.genai import types as genai_new_types
+    HAS_NEW_GENAI = True
+except ImportError:
+    HAS_NEW_GENAI = False
+    genai_new = None
+    genai_new_types = None
 from openai import OpenAI  # для Groq (OpenAI-совместимый)
 from flask import Flask, request, jsonify
 from threading import Thread
@@ -370,32 +377,77 @@ def save_state():
     db_set("exploit_msg_id", exploit_msg_id[0])
 
 # --- ВЕБХУК ---
-def send_to_webhook(content, username, avatar_url):
+async def send_to_webhook(content, username, avatar_url):
+    """Отправить текст через вебхук Discord."""
     data = {"content": content, "username": username, "avatar_url": avatar_url}
-    requests.post(AI_WEBHOOK_URL, json=data)
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(AI_WEBHOOK_URL, json=data) as resp:
+                if resp.status not in (200, 204):
+                    print(f"[webhook error] status={resp.status}")
+    except Exception as e:
+        print(f"[webhook exception] {e}")
 
-def send_file_to_webhook(file_bytes, filename, caption, username, avatar_url):
-    files = {"file": (filename, file_bytes, "text/plain")}
-    data = {"content": caption, "username": username, "avatar_url": avatar_url}
-    requests.post(AI_WEBHOOK_URL, data=data, files=files)
+async def send_file_to_webhook(file_bytes, filename, caption, username, avatar_url):
+    """Отправить файл через вебхук Discord."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            form = aiohttp.FormData()
+            form.add_field("content", caption)
+            form.add_field("username", username)
+            form.add_field("avatar_url", avatar_url)
+            form.add_field("file", file_bytes, filename=filename)
+            async with session.post(AI_WEBHOOK_URL, data=form) as resp:
+                if resp.status not in (200, 204):
+                    print(f"[webhook file error] status={resp.status}")
+    except Exception as e:
+        print(f"[webhook file exception] {e}")
 
 # --- ФУНКЦИЯ ЗАПРОСА К ИИ ---
 GEMMA_MODELS = {"gemma-3-27b-it", "gemma-3-12b-it", "gemma-3-4b-it"}
 
 async def generate_image(prompt: str) -> bytes:
-    """Генерация изображения через Gemini Imagen. Возвращает bytes PNG."""
+    """Генерация изображения через Gemini. Возвращает bytes PNG/JPEG."""
     if not AI_KEY:
         raise ValueError("GEMMA_KEY не задан")
-    # Используем Imagen через genai
-    model = genai.ImageGenerationModel("imagen-3.0-generate-001")
-    result = model.generate_images(
-        prompt=prompt,
-        number_of_images=1,
-        safety_filter_level="block_only_high",
-    )
-    if result.images:
-        return result.images[0]._image_bytes
-    raise ValueError("Imagen не вернул изображение")
+
+    loop = asyncio.get_event_loop()
+
+    # Пробуем новый SDK (google-genai) с Imagen 3
+    if HAS_NEW_GENAI:
+        def _gen_new():
+            client = genai_new.Client(api_key=AI_KEY)
+            result = client.models.generate_images(
+                model="imagen-3.0-generate-002",
+                prompt=prompt,
+                config=genai_new_types.GenerateImagesConfig(
+                    number_of_images=1,
+                    output_mime_type="image/png",
+                    safety_filter_level="BLOCK_ONLY_HIGH",
+                )
+            )
+            if result.generated_images:
+                return result.generated_images[0].image.image_bytes
+            raise ValueError("Imagen не вернул изображение")
+        return await loop.run_in_executor(None, _gen_new)
+
+    # Fallback: Gemini 2.0 Flash через старый SDK (generate_content с IMAGE modality)
+    def _gen_fallback():
+        import google.generativeai as _genai
+        _genai.configure(api_key=AI_KEY)
+        model = _genai.GenerativeModel("gemini-2.0-flash-exp")
+        from google.generativeai import types as _t
+        resp = model.generate_content(
+            prompt,
+            generation_config=_t.GenerationConfig(
+                response_mime_type="image/png",
+            )
+        )
+        for part in resp.candidates[0].content.parts:
+            if hasattr(part, "inline_data") and part.inline_data:
+                return part.inline_data.data
+        raise ValueError("Модель не вернула изображение")
+    return await loop.run_in_executor(None, _gen_fallback)
 
 
 async def _call_model(model_name: str, prompt: str, history: list, media_parts: list = None) -> str:
@@ -1048,23 +1100,23 @@ async def on_message(message):
                         full = f"{caption}\n{msg}"
                         if len(full) > 1990:
                             for i in range(0, len(full), 1990):
-                                send_to_webhook(full[i:i+1990], "Nexus AI", AI_AVATAR_URL)
+                                await send_to_webhook(full[i:i+1990], "Nexus AI", AI_AVATAR_URL)
                         else:
-                            send_to_webhook(full, "Nexus AI", AI_AVATAR_URL)
+                            await send_to_webhook(full, "Nexus AI", AI_AVATAR_URL)
                     else:
                         ext, label = get_file_info(lang)
                         filename = f"{label}.{ext}"
                         if text_only:
                             caption += f"\n{text_only}"
                         caption += "\n*(Код отправлен файлом)*"
-                        send_file_to_webhook(code.encode("utf-8"), filename, caption, "Nexus AI", AI_AVATAR_URL)
+                        await send_file_to_webhook(code.encode("utf-8"), filename, caption, "Nexus AI", AI_AVATAR_URL)
                 else:
                     full_answer = f"{caption}\n{answer_text}"
                     if len(full_answer) > 1990:
                         for i in range(0, len(full_answer), 1990):
-                            send_to_webhook(full_answer[i:i+1990], "Nexus AI", AI_AVATAR_URL)
+                            await send_to_webhook(full_answer[i:i+1990], "Nexus AI", AI_AVATAR_URL)
                     else:
-                        send_to_webhook(full_answer, "Nexus AI", AI_AVATAR_URL)
+                        await send_to_webhook(full_answer, "Nexus AI", AI_AVATAR_URL)
             return
 
         # ?img команда — генерация изображения
@@ -1082,7 +1134,7 @@ async def on_message(message):
                 try:
                     img_bytes = await generate_image(img_prompt)
                     file = discord.File(fp=io.BytesIO(img_bytes), filename="nexus_ai.png")
-                    send_to_webhook(
+                    await send_to_webhook(
                         f"🎨 **{message.author.mention}** — *{img_prompt[:100]}*",
                         "Nexus AI", AI_AVATAR_URL
                     )
