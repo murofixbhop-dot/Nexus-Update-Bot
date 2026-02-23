@@ -461,98 +461,79 @@ async def send_file_to_webhook(file_bytes, filename, caption, username, avatar_u
 GEMMA_MODELS = {"gemma-3-27b-it", "gemma-3-12b-it", "gemma-3-4b-it"}
 
 async def generate_image(prompt: str) -> bytes:
-    """Генерация изображения — несколько бесплатных сервисов с fallback."""
-    import urllib.parse
-    encoded = urllib.parse.quote(prompt)
+    """Генерация через HuggingFace Inference API (FLUX.1-schnell) — бесплатно."""
+    HF_TOKEN = os.getenv("HF_TOKEN", "")
+
+    headers = {}
+    if HF_TOKEN:
+        headers["Authorization"] = f"Bearer {HF_TOKEN}"
+
+    payload = {
+        "inputs": prompt,
+        "parameters": {
+            "num_inference_steps": 4,
+            "width": 1024,
+            "height": 1024,
+        }
+    }
+
+    # Список моделей от быстрой к качественной
+    MODELS = [
+        "black-forest-labs/FLUX.1-schnell",
+        "stabilityai/stable-diffusion-xl-base-1.0",
+        "runwayml/stable-diffusion-v1-5",
+    ]
+
     last_err = None
-
-    async with aiohttp.ClientSession(
-        connector=aiohttp.TCPConnector(ssl=False, limit=10),
-        timeout=aiohttp.ClientTimeout(total=90)
-    ) as session:
-
-        # ── 1. gen.pollinations.ai (новый unified endpoint, стабильнее) ────
-        for model in ["flux", "turbo", "stable-diffusion-3-5"]:
-            url = f"https://gen.pollinations.ai/image/{encoded}?model={model}&width=1024&height=1024&nologo=true"
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as session:
+        for model in MODELS:
+            url = f"https://api-inference.huggingface.co/models/{model}"
             try:
-                async with session.get(url) as resp:
-                    if resp.status == 200:
-                        content_type = resp.content_type or ""
-                        data = await resp.read()
-                        if len(data) > 5000 and ("image" in content_type or data[:4] in (b"\xff\xd8\xff\xe0", b"\x89PNG", b"GIF8", b"RIFF", b"\x89PNG")):
-                            return data
-                        last_err = ValueError(f"gen/{model}: маленький ответ {len(data)}b")
-                    else:
-                        last_err = ValueError(f"gen/{model}: HTTP {resp.status}")
-            except Exception as e:
-                last_err = e
-            continue
-
-        # ── 2. image.pollinations.ai (старый endpoint, иногда 530) ─────────
-        for model in ["flux", "turbo"]:
-            url = f"https://image.pollinations.ai/prompt/{encoded}?model={model}&width=1024&height=1024&nologo=true"
-            try:
-                async with session.get(url) as resp:
+                async with session.post(url, headers=headers, json=payload) as resp:
                     if resp.status == 200:
                         data = await resp.read()
-                        if len(data) > 5000:
+                        # Проверяем что это реально изображение а не JSON ошибка
+                        if len(data) > 5000 and not data.strip().startswith(b'{'):
                             return data
-                        last_err = ValueError(f"old/{model}: маленький ответ")
-                    else:
-                        last_err = ValueError(f"old/{model}: HTTP {resp.status}")
-            except Exception as e:
-                last_err = e
-
-        # ── 3. Stability AI Community (SDXL, бесплатный tier) ─────────────
-        stability_key = os.getenv("STABILITY_KEY", "")
-        if stability_key:
-            url = "https://api.stability.ai/v1/generation/stable-diffusion-xl-1024-v1-0/text-to-image"
-            try:
-                async with session.post(url,
-                    headers={"Authorization": f"Bearer {stability_key}", "Content-Type": "application/json"},
-                    json={"text_prompts": [{"text": prompt}], "samples": 1, "steps": 30}
-                ) as resp:
-                    if resp.status == 200:
-                        js = await resp.json()
-                        import base64
-                        img_b64 = js["artifacts"][0]["base64"]
-                        return base64.b64decode(img_b64)
-                    last_err = ValueError(f"stability: HTTP {resp.status}")
-            except Exception as e:
-                last_err = e
-
-    raise ValueError(f"Все сервисы недоступны. Последняя ошибка: {last_err}")
-
-
-async def generate_video(prompt: str) -> bytes:
-    """Генерация видео через Pollinations gen endpoint — бесплатно."""
-    import urllib.parse
-    encoded = urllib.parse.quote(prompt)
-    last_err = None
-
-    async with aiohttp.ClientSession(
-        connector=aiohttp.TCPConnector(ssl=False),
-        timeout=aiohttp.ClientTimeout(total=240)
-    ) as session:
-
-        # gen.pollinations.ai/video endpoint (seedance)
-        for model in ["seedance", "wan"]:
-            url = f"https://gen.pollinations.ai/video/{encoded}?model={model}&duration=5"
-            try:
-                async with session.get(url) as resp:
-                    if resp.status == 200:
-                        ctype = resp.content_type or ""
-                        data = await resp.read()
-                        if len(data) > 50000 and ("video" in ctype or data[:4] in (b"\x00\x00\x00", b"ftyp"[:4]) or b"ftyp" in data[:20]):
-                            return data
-                        last_err = ValueError(f"{model}: маленький ответ {len(data)}b content-type={ctype}")
+                        # Если JSON — читаем ошибку
+                        try:
+                            err_json = json.loads(data)
+                            last_err = ValueError(f"{model}: {err_json.get('error', data[:100])}")
+                        except:
+                            last_err = ValueError(f"{model}: маленький ответ {len(data)}b")
+                    elif resp.status == 503:
+                        # Модель загружается — ждём и пробуем снова
+                        await asyncio.sleep(8)
+                        async with session.post(url, headers=headers, json=payload) as resp2:
+                            if resp2.status == 200:
+                                data = await resp2.read()
+                                if len(data) > 5000 and not data.strip().startswith(b'{'):
+                                    return data
+                        last_err = ValueError(f"{model}: 503 model loading")
                     else:
                         text = await resp.text()
                         last_err = ValueError(f"{model}: HTTP {resp.status} — {text[:150]}")
+            except asyncio.TimeoutError:
+                last_err = ValueError(f"{model}: timeout")
             except Exception as e:
                 last_err = e
 
-    raise ValueError(f"Генерация видео недоступна: {last_err}")
+    raise ValueError(
+        f"Не удалось сгенерировать изображение.\n"
+        f"Ошибка: {last_err}\n"
+        f"Добавь HF_TOKEN в переменные окружения (бесплатно на huggingface.co)"
+        if not HF_TOKEN else
+        f"Не удалось сгенерировать изображение. Ошибка: {last_err}"
+    )
+
+
+async def generate_video(prompt: str) -> bytes:
+    """Заглушка — стабильного бесплатного video API не существует."""
+    raise ValueError(
+        "Генерация видео временно недоступна.\n"
+        "Все бесплатные сервисы (Pollinations video, WAN) нестабильны.\n"
+        "Токены за видео не списаны."
+    )
 
 
 async def _call_model(model_name: str, prompt: str, history: list, media_parts: list = None) -> str:
@@ -826,10 +807,19 @@ class AskAIModal(discord.ui.Modal, title="Nexus AI — Задать вопрос
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
-        success, answer_text = await ask_ai(interaction.user.id, self.prompt.value)
+        uid = interaction.user.id
+        bal = get_tokens(uid)
+        if bal < TOKEN_COST_AI:
+            await interaction.followup.send(
+                f"❌ Not enough tokens! You have **{bal}**, need **{TOKEN_COST_AI}**. Use `!tokens` to check balance.",
+                ephemeral=True
+            )
+            return
+        success, answer_text = await ask_ai(uid, self.prompt.value)
         if not success:
             await interaction.followup.send(f"❌ Ошибка: {answer_text}", ephemeral=True)
             return
+        spend_tokens(uid, TOKEN_COST_AI)
         await send_ai_reply(interaction, answer_text)
 
 
@@ -850,11 +840,19 @@ class UniversalAITextModal(discord.ui.Modal, title="Nexus AI — Универс�
 
         # Генерация изображения
         if text.lower().startswith(("!img ", "!имг ", "сгенерируй ", "нарисуй ")):
+            bal = get_tokens(uid)
+            if bal < TOKEN_COST_IMG:
+                await interaction.followup.send(
+                    f"❌ Not enough tokens! You have **{bal}**, need **{TOKEN_COST_IMG}** for image gen.",
+                    ephemeral=True
+                )
+                return
             img_prompt = re.sub(r"^(!img |!имг |сгенерируй |нарисуй )", "", text, flags=re.IGNORECASE).strip()
             try:
                 img_bytes = await generate_image(img_prompt)
+                spend_tokens(uid, TOKEN_COST_IMG)
                 await interaction.followup.send(
-                    content=f"🎨 *{img_prompt[:100]}*",
+                    content=f"🎨 **-{TOKEN_COST_IMG} tokens** — *{img_prompt[:100]}*",
                     file=discord.File(fp=io.BytesIO(img_bytes), filename="nexus_ai.png"),
                     ephemeral=True,
                 )
@@ -862,10 +860,18 @@ class UniversalAITextModal(discord.ui.Modal, title="Nexus AI — Универс�
                 await interaction.followup.send(f"❌ Ошибка генерации: {e}", ephemeral=True)
             return
 
+        bal = get_tokens(uid)
+        if bal < TOKEN_COST_AI:
+            await interaction.followup.send(
+                f"❌ Not enough tokens! You have **{bal}**, need **{TOKEN_COST_AI}**.",
+                ephemeral=True
+            )
+            return
         success, answer_text = await ask_ai(uid, text)
         if not success:
             await interaction.followup.send(f"❌ Ошибка: {answer_text}", ephemeral=True)
             return
+        spend_tokens(uid, TOKEN_COST_AI)
         await send_ai_reply(interaction, answer_text)
 
 
@@ -919,10 +925,19 @@ class ImageGenModal(discord.ui.Modal, title="🎨 Генерация изобр�
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
+        uid = interaction.user.id
+        bal = get_tokens(uid)
+        if bal < TOKEN_COST_IMG:
+            await interaction.followup.send(
+                f"❌ Not enough tokens! You have **{bal}**, need **{TOKEN_COST_IMG}** for image gen.",
+                ephemeral=True
+            )
+            return
         try:
             img_bytes = await generate_image(self.prompt.value)
+            spend_tokens(uid, TOKEN_COST_IMG)
             await interaction.followup.send(
-                content=f"🎨 *{self.prompt.value[:100]}*",
+                content=f"🎨 **-{TOKEN_COST_IMG} tokens** — *{self.prompt.value[:100]}*",
                 file=discord.File(fp=io.BytesIO(img_bytes), filename="nexus_ai.png"),
                 ephemeral=True,
             )
@@ -942,16 +957,23 @@ class WebSearchModal(discord.ui.Modal, title="🌐 Поиск в интерне�
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
         uid = interaction.user.id
-        # Напрямую вызываем compound без смены глобальной модели
+        bal = get_tokens(uid)
+        if bal < TOKEN_COST_AI:
+            await interaction.followup.send(
+                f"❌ Not enough tokens! You have **{bal}**, need **{TOKEN_COST_AI}**.",
+                ephemeral=True
+            )
+            return
         try:
             answer_text = await _call_model("groq/compound", self.query.value, get_user_history(uid))
+            spend_tokens(uid, TOKEN_COST_AI)
             await send_ai_reply(interaction, answer_text)
         except Exception as e:
-            # Fallback на обычный ask_ai если compound упал
             success, answer_text = await ask_ai(uid, self.query.value)
             if not success:
                 await interaction.followup.send(f"❌ Ошибка: {answer_text}", ephemeral=True)
                 return
+            spend_tokens(uid, TOKEN_COST_AI)
             await send_ai_reply(interaction, answer_text)
 
 
@@ -1371,26 +1393,27 @@ async def on_message(message):
                     first = True
                     for chunk in _split_text(body):
                         if first:
-                            await message.channel.send(f"{mention}\n{chunk}")
+                            await message.channel.send(f"{mention}\n{chunk}", delete_after=300)
                             first = False
                         else:
-                            await message.channel.send(chunk)
+                            await message.channel.send(chunk, delete_after=300)
                 else:
                     ext, label = get_file_info(lang)
                     fname = f"{label}.{ext}"
                     header = f"{mention}\n{text_only}\n*(Код — файлом)*" if text_only else f"{mention}\n*(Код — файлом)*"
                     await message.channel.send(
                         header,
-                        file=discord.File(fp=io.BytesIO(code.encode("utf-8")), filename=fname)
+                        file=discord.File(fp=io.BytesIO(code.encode("utf-8")), filename=fname),
+                        delete_after=300
                     )
             else:
                 first = True
                 for chunk in _split_text(answer_text):
                     if first:
-                        await message.channel.send(f"{mention}\n{chunk}")
+                        await message.channel.send(f"{mention}\n{chunk}", delete_after=300)
                         first = False
                     else:
-                        await message.channel.send(chunk)
+                        await message.channel.send(chunk, delete_after=300)
             return
 
         # ?img команда — генерация изображения
@@ -1419,7 +1442,8 @@ async def on_message(message):
                     spend_tokens(message.author.id, TOKEN_COST_IMG)
                     await message.channel.send(
                         f"🎨 {message.author.mention} **-{TOKEN_COST_IMG} tokens** — *{img_prompt[:100]}*",
-                        file=discord.File(fp=io.BytesIO(img_bytes), filename="nexus_ai.png")
+                        file=discord.File(fp=io.BytesIO(img_bytes), filename="nexus_ai.png"),
+                        delete_after=300
                     )
                 except Exception as e:
                     await message.channel.send(
@@ -1429,37 +1453,12 @@ async def on_message(message):
 
         # ?video / ?vid — генерация видео
         if content.startswith(('?video ', '?vid ', '?видео ')):
-            parts = message.content.split(' ', 1)
-            vid_prompt = parts[1].strip() if len(parts) > 1 else ""
-            if not vid_prompt:
-                try: await message.delete()
-                except: pass
-                return
-            bal = get_tokens(message.author.id)
-            if bal < TOKEN_COST_VIDEO:
-                try: await message.delete()
-                except: pass
-                await message.channel.send(
-                    f"❌ {message.author.mention} Not enough tokens! You have **{bal}**, need **{TOKEN_COST_VIDEO}** for video gen. Use `!tokens` to check balance.",
-                    delete_after=15
-                )
-                return
-            try:
-                await message.delete()
-            except:
-                pass
-            status_msg = await message.channel.send(f"🎬 {message.author.mention} Generating video... *(~30-60 sec)*")
-            try:
-                video_bytes = await generate_video(vid_prompt)
-                spend_tokens(message.author.id, TOKEN_COST_VIDEO)
-                await message.channel.send(
-                    f"🎬 {message.author.mention} **-{TOKEN_COST_VIDEO} tokens** — *{vid_prompt[:100]}*",
-                    file=discord.File(fp=io.BytesIO(video_bytes), filename="nexus_video.mp4")
-                )
-            except Exception as e:
-                await message.channel.send(
-                    f"❌ {message.author.mention} Video error: {e}", delete_after=25
-                )
+            try: await message.delete()
+            except: pass
+            await message.channel.send(
+                f"⚠️ {message.author.mention} Video generation is **temporarily unavailable** — no stable free API exists right now. Tokens not spent.",
+                delete_after=20
+            )
             try:
                 await status_msg.delete()
             except:
