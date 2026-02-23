@@ -100,14 +100,22 @@ GROQ_MODELS = {
 # Модели с реальным доступом в интернет (поиск встроен в API)
 WEB_SEARCH_MODELS = {"groq/compound", "groq/compound-mini"}
 
-SYSTEM_PROMPT = (
+_SYSTEM_BASE = (
     "Ты — Nexus AI. Отвечай максимально коротко — 1-2 предложения если вопрос простой. "
     "Никаких вступлений, не повторяй вопрос, без лишних слов. "
     "Смайлики только если очень уместно. "
     "Код пиши полностью, ничего не обрезай и не удаляй из предыдущего кода если не просили. "
     "Код оборачивай в блоки: ```язык\nкод\n```. "
+)
+# Для обычных моделей — без интернета
+SYSTEM_PROMPT = _SYSTEM_BASE + (
     "У тебя нет доступа в интернет. Если просят что-то поискать — честно скажи об этом и ответь из своих знаний. "
     "Никогда не придумывай ссылки и не симулируй поиск."
+)
+# Для Compound — есть интернет
+SYSTEM_PROMPT_WEB = _SYSTEM_BASE + (
+    "У тебя ЕСТЬ доступ в интернет через встроенный поиск — используй его когда нужна актуальная информация. "
+    "Никогда не придумывай ссылки — только реальные из поиска."
 )
 
 # Текущая модель хранится в MongoDB для синхронизации
@@ -378,7 +386,8 @@ async def _call_model(model_name: str, prompt: str, history: list) -> str:
         if not groq_client:
             raise ValueError("GROQ_KEY не задан")
         is_compound = model_name in WEB_SEARCH_MODELS
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        sys_prompt = SYSTEM_PROMPT_WEB if is_compound else SYSTEM_PROMPT
+        messages = [{"role": "system", "content": sys_prompt}]
         for item in history[-(MAX_HISTORY - 2):]:
             role = "assistant" if item["role"] == "model" else "user"
             messages.append({"role": role, "content": item["parts"][0]})
@@ -626,10 +635,9 @@ class ModelSelectGoogle(discord.ui.Select):
         m = MODELS_INFO.get(get_current_model(), {})
         lbl = m.get("label", get_current_model())
         web = " 🌐" if get_current_model() in WEB_SEARCH_MODELS else ""
-        # defer ephemeral — Discord не покажет никакого сообщения,
-        # затем удаляем исходное сообщение с меню выбора
-        await interaction.response.defer(ephemeral=True)
-        await interaction.message.delete()
+        # edit_message убирает embed+view (меню пропадает), content пустой — ничего не видно
+        await interaction.response.edit_message(content=f"✅ **{lbl}{web}**", embed=None, view=None)
+        await interaction.delete_original_response()
 
 class ModelSelectGroq(discord.ui.Select):
     def __init__(self):
@@ -656,8 +664,8 @@ class ModelSelectGroq(discord.ui.Select):
         m = MODELS_INFO.get(get_current_model(), {})
         lbl = m.get("label", get_current_model())
         web = " 🌐" if get_current_model() in WEB_SEARCH_MODELS else ""
-        await interaction.response.defer(ephemeral=True)
-        await interaction.message.delete()
+        await interaction.response.edit_message(content=f"✅ **{lbl}{web}** [Groq]", embed=None, view=None)
+        await interaction.delete_original_response()
 
 class AutoToggleButton(discord.ui.Button):
     def __init__(self):
