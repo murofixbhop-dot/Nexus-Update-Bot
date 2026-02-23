@@ -7,6 +7,7 @@ import os
 import time
 import re
 import google.generativeai as genai
+from openai import OpenAI  # для Groq (OpenAI-совместимый)
 from flask import Flask, request, jsonify
 from threading import Thread
 from pymongo import MongoClient
@@ -72,6 +73,22 @@ generation_config = {
     "top_p": 0.95,
     "top_k": 40,
     "max_output_tokens": 4096,
+}
+
+# --- GROQ CLIENT ---
+GROQ_KEY = os.getenv('GROQ_KEY')
+groq_client = OpenAI(
+    api_key=GROQ_KEY,
+    base_url="https://api.groq.com/openai/v1"
+) if GROQ_KEY else None
+
+GROQ_MODELS = {
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+    "deepseek-r1-distill-llama-70b",
+    "gemma2-9b-it",
+    "mixtral-8x7b-32768",
+    "qwen-qwq-32b",
 }
 
 SYSTEM_PROMPT = (
@@ -145,6 +162,55 @@ MODELS_INFO = {
         "rpd": 300,
         "tpm": 30000,
         "desc": "Лёгкая и быстрая"
+    },
+    # --- GROQ (нужен GROQ_KEY) ---
+    "llama-3.3-70b-versatile": {
+        "label": "Llama 3.3 70B (Groq)",
+        "call": "llama-3.3-70b-versatile",
+        "rpm": 30,
+        "rpd": 1000,
+        "tpm": 12000,
+        "desc": "Мощная, очень быстрая [Groq]"
+    },
+    "llama-3.1-8b-instant": {
+        "label": "Llama 3.1 8B (Groq)",
+        "call": "llama-3.1-8b-instant",
+        "rpm": 30,
+        "rpd": 14400,
+        "tpm": 20000,
+        "desc": "Ультра быстрая, много запросов [Groq]"
+    },
+    "deepseek-r1-distill-llama-70b": {
+        "label": "DeepSeek R1 70B (Groq)",
+        "call": "deepseek-r1-distill-llama-70b",
+        "rpm": 30,
+        "rpd": 1000,
+        "tpm": 6000,
+        "desc": "Рассуждения, математика, код [Groq]"
+    },
+    "qwen-qwq-32b": {
+        "label": "Qwen QwQ 32B (Groq)",
+        "call": "qwen-qwq-32b",
+        "rpm": 30,
+        "rpd": 1000,
+        "tpm": 6000,
+        "desc": "Умная reasoning модель [Groq]"
+    },
+    "mixtral-8x7b-32768": {
+        "label": "Mixtral 8x7B (Groq)",
+        "call": "mixtral-8x7b-32768",
+        "rpm": 30,
+        "rpd": 14400,
+        "tpm": 5000,
+        "desc": "Быстрая, большой контекст [Groq]"
+    },
+    "gemma2-9b-it": {
+        "label": "Gemma 2 9B (Groq)",
+        "call": "gemma2-9b-it",
+        "rpm": 30,
+        "rpd": 14400,
+        "tpm": 15000,
+        "desc": "Быстрая Gemma через Groq [Groq]"
     },
 }
 
@@ -423,12 +489,16 @@ class AIPanelView(discord.ui.View):
 class ModelSelect(discord.ui.Select):
     def __init__(self):
         options = [
-            discord.SelectOption(label="Gemini 2.5 Flash", value="gemini-2.5-flash", emoji="🔥", description="Рекомендуется • 500 req/day"),
-            discord.SelectOption(label="Gemini 2.5 Pro", value="gemini-2.5-pro", emoji="👑", description="Самая мощная • 100 req/day"),
-            discord.SelectOption(label="Gemini 2.0 Flash", value="gemini-2.0-flash", emoji="⚡", description="Быстрая • 1500 req/day"),
-            discord.SelectOption(label="Gemma 3 27B", value="gemma-3-27b-it", emoji="🧠", description="Локальная мощная • 50 req/day"),
-            discord.SelectOption(label="Gemma 3 12B", value="gemma-3-12b-it", emoji="🤖", description="Баланс • 100 req/day"),
-            discord.SelectOption(label="Gemma 3 4B", value="gemma-3-4b-it", emoji="📱", description="Лёгкая • 300 req/day"),
+            discord.SelectOption(label="Gemini 2.5 Flash", value="gemini-2.5-flash", emoji="🔥", description="Google • 500 req/day"),
+            discord.SelectOption(label="Gemini 2.5 Pro", value="gemini-2.5-pro", emoji="👑", description="Google • 100 req/day"),
+            discord.SelectOption(label="Gemini 2.0 Flash", value="gemini-2.0-flash", emoji="⚡", description="Google • 1500 req/day"),
+            discord.SelectOption(label="Llama 3.3 70B", value="llama-3.3-70b-versatile", emoji="🦙", description="Groq • 1000 req/day"),
+            discord.SelectOption(label="DeepSeek R1 70B", value="deepseek-r1-distill-llama-70b", emoji="🧠", description="Groq • умная reasoning"),
+            discord.SelectOption(label="Qwen QwQ 32B", value="qwen-qwq-32b", emoji="🌟", description="Groq • reasoning"),
+            discord.SelectOption(label="Llama 3.1 8B Fast", value="llama-3.1-8b-instant", emoji="💨", description="Groq • 14400 req/day"),
+            discord.SelectOption(label="Mixtral 8x7B", value="mixtral-8x7b-32768", emoji="🎭", description="Groq • 14400 req/day"),
+            discord.SelectOption(label="Gemma 2 9B", value="gemma2-9b-it", emoji="📱", description="Groq • 14400 req/day"),
+            discord.SelectOption(label="Gemma 3 27B", value="gemma-3-27b-it", emoji="🤖", description="Google • 50 req/day"),
         ]
         super().__init__(placeholder="Выберите модель...", min_values=1, max_values=1, options=options)
 
