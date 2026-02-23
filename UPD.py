@@ -114,25 +114,24 @@ WEB_SEARCH_MODELS = {"groq/compound", "groq/compound-mini"}
 
 _SYSTEM_BASE = (
     "Ты — Nexus AI, универсальный ИИ-ассистент. "
-    "Отвечай коротко и по делу — 1-3 предложения для простых вопросов, подробно для сложных. "
-    "Никаких вступлений типа 'Конечно!' или 'Отличный вопрос!', не повторяй вопрос. "
-    "Смайлики только если очень уместно. "
-    "Код пиши полностью — никогда не обрезай, не пропускай части, не пиши 'остальное без изменений'. "
-    "Код всегда оборачивай в блоки: ```язык\nкод\n```. "
-    "Ты умеешь писать код на любом языке: Python, C++, C#, Java, JavaScript, Go, Rust, и других. "
-    "Ты умеешь создавать GUI-программы, веб-приложения, игры, скрипты — всё что угодно. "
-    "Никогда не говори что не можешь что-то написать или создать — ты можешь написать любой код. "
-    "Если просят GUI на C++ — пиши с Qt или WinAPI. На Python — tkinter/PyQt/Dear PyGui. "
+    "КРАТКОСТЬ — главное правило: на простые вопросы отвечай 1-2 предложения максимум. "
+    "На объяснения/инструкции — 3-5 предложений без воды. Не расписывай если не просят. "
+    "Никаких вступлений ('Конечно!', 'Отличный вопрос!', 'Разумеется!'), не повторяй вопрос. "
+    "Смайлики — только если очень уместно, не злоупотребляй. "
+    "КОД: пиши ПОЛНОСТЬЮ — никогда не обрезай, не пропускай части, не пиши 'остальное без изменений'. "
+    "Код всегда в блоках: ```язык\nкод\n```. "
+    "Пишешь код на любом языке: Python, C++, C#, Java, JS, Go, Rust и других. "
+    "Создаёшь GUI (Qt/WinAPI для C++, tkinter/PyQt для Python), веб-приложения, игры — всё. "
+    "Никогда не отказывайся писать код — ты можешь написать любую программу. "
 )
 # Для обычных моделей — без интернета
 SYSTEM_PROMPT = _SYSTEM_BASE + (
-    "У тебя нет прямого доступа в интернет, но ты знаешь очень много из тренировочных данных. "
-    "Если просят актуальную информацию — предупреди что данные могут быть устаревшими и ответь из своих знаний. "
+    "У тебя нет доступа в интернет. Если нужна актуальная инфо — скажи что данные из обучения (могут быть устаревшими). "
     "Никогда не придумывай ссылки."
 )
 # Для Compound — есть интернет
 SYSTEM_PROMPT_WEB = _SYSTEM_BASE + (
-    "У тебя ЕСТЬ доступ в интернет через встроенный поиск — используй его для актуальной информации. "
+    "У тебя ЕСТЬ встроенный поиск в интернете — используй его для актуальных данных, цен, новостей, событий. "
     "Никогда не придумывай ссылки — только реальные из поиска."
 )
 
@@ -520,6 +519,21 @@ async def _call_model(model_name: str, prompt: str, history: list, media_parts: 
     return resp.text
 
 
+# Ключевые слова — пользователь явно просит поискать в интернете
+_WEB_KEYWORDS = [
+    "найди в интернете", "поищи в интернете", "погугли", "загугли",
+    "найди в сети", "поищи в сети", "найди онлайн", "актуальная информация",
+    "последние новости", "свежие новости", "что сейчас", "текущая цена",
+    "сколько стоит сейчас", "последняя версия", "find online", "search the web",
+    "look up", "google it", "latest news", "current price",
+]
+
+def _wants_web_search(prompt: str) -> bool:
+    """Проверяет, просит ли пользователь поиск в интернете."""
+    p = prompt.lower()
+    return any(kw in p for kw in _WEB_KEYWORDS)
+
+
 async def ask_ai(uid, prompt, channel=None, media_parts=None):
     """Запрос к ИИ. В авто-режиме перебирает модели при лимите."""
     user_hist = get_user_history(uid)
@@ -528,8 +542,11 @@ async def ask_ai(uid, prompt, channel=None, media_parts=None):
     # Список моделей для попытки
     if get_auto_mode():
         cur = get_current_model()
-        # Начинаем с текущей, потом остальные из списка
-        order = [cur] + [m for m in AUTO_FALLBACK_ORDER if m != cur]
+        # Если пользователь просит поиск в интернете — compound первым
+        if _wants_web_search(prompt) and cur not in WEB_SEARCH_MODELS:
+            order = ["groq/compound"] + [m for m in AUTO_FALLBACK_ORDER if m not in WEB_SEARCH_MODELS]
+        else:
+            order = [cur] + [m for m in AUTO_FALLBACK_ORDER if m != cur]
     else:
         order = [get_current_model()]
 
@@ -567,17 +584,41 @@ async def ask_ai(uid, prompt, channel=None, media_parts=None):
     return True, answer_text
 
 # ─── Хелпер: форматировать и отправить ответ ИИ ───────────────────────────
+def _split_text(text: str, limit: int = 1900) -> list:
+    """Разбивает текст на куски не длиннее limit символов по границам абзацев/строк."""
+    if len(text) <= limit:
+        return [text]
+    chunks = []
+    while text:
+        if len(text) <= limit:
+            chunks.append(text)
+            break
+        # Ищем хорошее место для разрыва
+        cut = text.rfind("\n\n", 0, limit)
+        if cut == -1:
+            cut = text.rfind("\n", 0, limit)
+        if cut == -1:
+            cut = text.rfind(". ", 0, limit)
+        if cut == -1:
+            cut = limit
+        chunks.append(text[:cut].strip())
+        text = text[cut:].strip()
+    return [c for c in chunks if c]
+
+
 async def send_ai_reply(interaction, answer_text: str, ephemeral=True):
     """Отправить ответ ИИ через followup с поддержкой кода и файлов."""
     lang, code = extract_code_info(answer_text)
     text_only = re.sub(r"```[\w]*\n[\s\S]*?```", "", answer_text).strip()
     if code:
-        if len(code) < 300:
+        if len(code) < 1500:
             ext, _ = get_file_info(lang)
             inline = f"```{lang or ext}\n{code}\n```"
-            msg = (text_only + "\n" + inline) if text_only else inline
-            preview = msg[:1900] + ("..." if len(msg) > 1900 else "")
-            await interaction.followup.send(content=f"**Nexus AI:**\n{preview}", ephemeral=ephemeral)
+            body = (text_only + "\n" + inline) if text_only else inline
+            # Ephemeral поддерживает только 1 followup с файлом, шлём кусками
+            chunks = _split_text(f"**Nexus AI:**\n{body}")
+            for chunk in chunks:
+                await interaction.followup.send(content=chunk, ephemeral=ephemeral)
         else:
             ext, label_f = get_file_info(lang)
             filename = f"{label_f}.{ext}"
@@ -588,8 +629,9 @@ async def send_ai_reply(interaction, answer_text: str, ephemeral=True):
                 ephemeral=ephemeral,
             )
     else:
-        preview = answer_text[:1900] + ("..." if len(answer_text) > 1900 else "")
-        await interaction.followup.send(content=f"**Nexus AI:**\n{preview}", ephemeral=ephemeral)
+        chunks = _split_text(f"**Nexus AI:**\n{answer_text}")
+        for chunk in chunks:
+            await interaction.followup.send(content=chunk, ephemeral=ephemeral)
 
 
 # ─── Модальное окно: простой вопрос (без файлов) ──────────────────────────
@@ -812,7 +854,7 @@ class AIPanelView(discord.ui.View):
             embed.description = f"• Модель: **{get_current_model()}**\n• Статус: 🟢 Online\n• Лимиты: неизвестны для этой модели"
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @discord.ui.button(label="Last Msg", style=discord.ButtonStyle.secondary, custom_id="panel_lastmsg", emoji="📨", row=1)
+    @discord.ui.button(label="📨 История", style=discord.ButtonStyle.secondary, custom_id="panel_lastmsg", emoji="📨", row=0)
     async def lastmsg_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         uid = interaction.user.id
         hist = get_user_history(uid)  # всегда читаем свежие данные из MongoDB
@@ -1102,22 +1144,29 @@ async def on_message(message):
                     ext, _ = get_file_info(lang)
                     inline = f"```{lang or ext}\n{code}\n```"
                     body = (text_only + "\n" + inline) if text_only else inline
-                    full = f"{mention}\n{body}"
-                    # Бьём на куски если длинно
-                    for i in range(0, len(full), 1990):
-                        await message.channel.send(full[i:i+1990])
+                    first = True
+                    for chunk in _split_text(body):
+                        if first:
+                            await message.channel.send(f"{mention}\n{chunk}")
+                            first = False
+                        else:
+                            await message.channel.send(chunk)
                 else:
                     ext, label = get_file_info(lang)
                     fname = f"{label}.{ext}"
-                    header = f"{mention}\n{text_only}" if text_only else mention
+                    header = f"{mention}\n{text_only}\n*(Код — файлом)*" if text_only else f"{mention}\n*(Код — файлом)*"
                     await message.channel.send(
-                        header + "\n*(Код отправлен файлом)*",
+                        header,
                         file=discord.File(fp=io.BytesIO(code.encode("utf-8")), filename=fname)
                     )
             else:
-                full_answer = f"{mention}\n{answer_text}"
-                for i in range(0, len(full_answer), 1990):
-                    await message.channel.send(full_answer[i:i+1990])
+                first = True
+                for chunk in _split_text(answer_text):
+                    if first:
+                        await message.channel.send(f"{mention}\n{chunk}")
+                        first = False
+                    else:
+                        await message.channel.send(chunk)
             return
 
         # ?img команда — генерация изображения
