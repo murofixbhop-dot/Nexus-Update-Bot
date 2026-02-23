@@ -626,13 +626,10 @@ class ModelSelectGoogle(discord.ui.Select):
         m = MODELS_INFO.get(get_current_model(), {})
         lbl = m.get("label", get_current_model())
         web = " 🌐" if get_current_model() in WEB_SEARCH_MODELS else ""
-        # Закрываем меню редактируя сообщение без view, потом подтверждение
-        await interaction.response.edit_message(
-            content=f"✅ Выбрана: **{lbl}{web}**",
-            embed=None,
-            view=None
-        )
-        await interaction.delete_original_response()
+        # defer ephemeral — Discord не покажет никакого сообщения,
+        # затем удаляем исходное сообщение с меню выбора
+        await interaction.response.defer(ephemeral=True)
+        await interaction.message.delete()
 
 class ModelSelectGroq(discord.ui.Select):
     def __init__(self):
@@ -659,12 +656,8 @@ class ModelSelectGroq(discord.ui.Select):
         m = MODELS_INFO.get(get_current_model(), {})
         lbl = m.get("label", get_current_model())
         web = " 🌐" if get_current_model() in WEB_SEARCH_MODELS else ""
-        await interaction.response.edit_message(
-            content=f"✅ Выбрана: **{lbl}{web}** [Groq]",
-            embed=None,
-            view=None
-        )
-        await interaction.delete_original_response()
+        await interaction.response.defer(ephemeral=True)
+        await interaction.message.delete()
 
 class AutoToggleButton(discord.ui.Button):
     def __init__(self):
