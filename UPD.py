@@ -1249,8 +1249,8 @@ async def on_message(message):
     if message.channel.id == AI_CHANNEL_ID:
         content = message.content.lower()
 
-        # !panel — пропускаем в process_commands, не удаляем
-        if content.startswith('!panel'):
+        # Команды !panel и !token — пропускаем в process_commands, не удаляем
+        if content.startswith('!panel') or content.startswith('!token'):
             await bot.process_commands(message)
             return
 
@@ -1475,31 +1475,65 @@ async def on_message(message):
 
 # --- КОМАНДЫ ---
 @bot.command(name="token")
-async def token_cmd(ctx, member: discord.Member = None, amount: int = None):
-    """Owner only: !token @user 50 — give tokens to a user"""
+async def token_cmd(ctx, *, args: str = None):
+    """Owner only: !token <@mention|username|id> <amount>"""
     try: await ctx.message.delete()
     except: pass
-    # Only Owner role
+
     if not any(role.id == OWNER_ROLE_ID for role in ctx.author.roles):
         return
-    if not member or amount is None:
-        await ctx.send(
-            f"Usage: `!token @user <amount>`\nExample: `!token @Alex 50`",
-            delete_after=10
-        )
+
+    if not args:
+        await ctx.send("Usage: `!token <@mention|username|id> <amount>`\nExamples: `!token @Alex 50` or `!token murz2akk 50`", delete_after=12)
         return
+
+    parts = args.strip().rsplit(None, 1)
+    if len(parts) < 2:
+        await ctx.send("Specify amount! Example: `!token murz2akk 50`", delete_after=10)
+        return
+
+    user_query, amount_str = parts[0].strip(), parts[1].strip()
+
+    try:
+        amount = int(amount_str)
+    except ValueError:
+        await ctx.send(f"`{amount_str}` is not a valid number.", delete_after=10)
+        return
+
+    member = None
+    try:
+        member = await commands.MemberConverter().convert(ctx, user_query)
+    except:
+        pass
+
+    if not member:
+        q = user_query.lower()
+        for m in ctx.guild.members:
+            if m.name.lower() == q or m.display_name.lower() == q or (m.nick and m.nick.lower() == q):
+                member = m
+                break
+
+    if not member:
+        q = user_query.lower()
+        for m in ctx.guild.members:
+            if q in m.name.lower() or q in m.display_name.lower() or (m.nick and q in m.nick.lower()):
+                member = m
+                break
+
+    if not member:
+        await ctx.send(f"User `{user_query}` not found on this server.", delete_after=12)
+        return
+
     add_tokens(member.id, amount)
     new_bal = get_tokens(member.id)
     embed = discord.Embed(
-        title="💎 Tokens Added",
-        description=(
-            f"**{member.display_name}** received **+{amount}** tokens\n"
-            f"New balance: **{new_bal}** tokens"
-        ),
+        title="Tokens Added",
+        description="**" + member.display_name + "** received **+" + str(amount) + "** tokens\nNew balance: **" + str(new_bal) + "** tokens",
         color=0x2ecc71
     )
-    embed.set_footer(text=f"Added by {ctx.author.display_name} | Nexus Core")
+    embed.set_footer(text="Added by " + ctx.author.display_name + " | Nexus Core")
     await ctx.send(embed=embed, delete_after=20)
+
 
 
 @bot.command()
