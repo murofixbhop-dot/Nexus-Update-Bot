@@ -112,6 +112,30 @@ def set_current_model(model):
 # Для удобства — инициализируем если не задана
 if not db_get("current_model"):
     set_current_model("gemini-2.5-flash")
+
+def get_auto_mode():
+    return db_get("auto_mode", False)
+
+def set_auto_mode(val: bool):
+    db_set("auto_mode", val)
+
+# Порядок перебора моделей в авто-режиме (от надёжных к запасным)
+AUTO_FALLBACK_ORDER = [
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-2.0-flash",
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+    "gemini-3-flash-preview",
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "meta-llama/llama-4-maverick-17b-128e-instruct",
+    "deepseek-r1-distill-llama-70b",
+    "qwen-qwq-32b",
+    "qwen-2.5-32b",
+    "mixtral-8x7b-32768",
+    "gemma2-9b-it",
+]
 MAX_HISTORY = 30
 
 # Информация о моделях: название, лимиты (requests/day, tokens/min)
@@ -336,47 +360,84 @@ def send_file_to_webhook(file_bytes, filename, caption, username, avatar_url):
 # --- ФУНКЦИЯ ЗАПРОСА К ИИ ---
 GEMMA_MODELS = {"gemma-3-27b-it", "gemma-3-12b-it", "gemma-3-4b-it"}
 
+async def _call_model(model_name: str, prompt: str, history: list) -> str:
+    """Вызвать конкретную модель. Возвращает текст или бросает исключение."""
+    is_gemma = model_name in GEMMA_MODELS
+    is_groq  = model_name in GROQ_MODELS
+
+    if is_groq:
+        if not groq_client:
+            raise ValueError("GROQ_KEY не задан")
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        for item in history[-(MAX_HISTORY - 2):]:
+            role = "assistant" if item["role"] == "model" else "user"
+            messages.append({"role": role, "content": item["parts"][0]})
+        messages.append({"role": "user", "content": prompt})
+        resp = groq_client.chat.completions.create(
+            model=model_name, messages=messages,
+            max_tokens=4096, temperature=0.8,
+        )
+        return resp.choices[0].message.content
+
+    if is_gemma:
+        mdl = genai.GenerativeModel(model_name=model_name, generation_config=generation_config)
+        actual = f"Отвечай текстом, коротко и по делу. Не пиши код если не просят. Если просят найти что-то в интернете — скажи что у тебя нет доступа в интернет и ответь из своих знаний. Вопрос: {prompt}"
+    else:
+        mdl = genai.GenerativeModel(model_name=model_name, generation_config=generation_config, system_instruction=SYSTEM_PROMPT)
+        actual = prompt
+
+    hist_use = history[:]
+    if len(hist_use) > MAX_HISTORY - 2:
+        hist_use = hist_use[-(MAX_HISTORY - 2):]
+    chat = mdl.start_chat(history=hist_use)
+    resp = chat.send_message(actual)
+    return resp.text
+
+
 async def ask_ai(uid, prompt, channel=None):
-    """Общая функция запроса к ИИ. Возвращает (success, answer_text или error)"""
+    """Запрос к ИИ. В авто-режиме перебирает модели при лимите."""
     user_hist = get_user_history(uid)
-    try:
-        is_gemma = get_current_model() in GEMMA_MODELS
 
-        if is_gemma:
-            # Gemma не поддерживает system_instruction совсем
-            model = genai.GenerativeModel(
-                model_name=get_current_model(),
-                generation_config=generation_config,
-            )
-            # Для Gemma — короткая инструкция без упоминания кода
-            actual_prompt = f"Отвечай текстом, коротко и по делу. Не пиши код если не просят. Если просят найти что-то в интернете — скажи что у тебя нет доступа в интернет и ответь из своих знаний. Вопрос: {prompt}"
-        else:
-            model = genai.GenerativeModel(
-                model_name=get_current_model(),
-                generation_config=generation_config,
-                system_instruction=SYSTEM_PROMPT
-            )
-            actual_prompt = prompt
+    # Список моделей для попытки
+    if get_auto_mode():
+        cur = get_current_model()
+        # Начинаем с текущей, потом остальные из списка
+        order = [cur] + [m for m in AUTO_FALLBACK_ORDER if m != cur]
+    else:
+        order = [get_current_model()]
 
-        # Строим историю только из реальных сообщений
-        history_to_use = user_hist[:]
-        if len(history_to_use) > MAX_HISTORY - 2:
-            history_to_use = history_to_use[-(MAX_HISTORY - 2):]
+    last_err = "Неизвестная ошибка"
+    used_model = order[0]
 
-        chat = model.start_chat(history=history_to_use)
-        response = chat.send_message(actual_prompt)
-        answer_text = response.text
+    for model_name in order:
+        try:
+            answer_text = await _call_model(model_name, prompt, user_hist)
+            used_model = model_name
+            break
+        except Exception as e:
+            err_str = str(e).lower()
+            # Пробуем следующую только при ошибках лимита / недоступности
+            if any(x in err_str for x in ["429", "quota", "rate", "limit", "503", "overloaded", "unavailable", "resource_exhausted"]):
+                last_err = str(e)
+                continue
+            # Любая другая ошибка — возвращаем сразу
+            return False, str(e)
+    else:
+        return False, f"Все модели недоступны. Последняя ошибка: {last_err}"
 
-        # Сохраняем оригинальный промпт (без системного префикса)
-        user_hist.append({"role": "user", "parts": [prompt]})
-        user_hist.append({"role": "model", "parts": [answer_text]})
-        if len(user_hist) > MAX_HISTORY:
-            user_hist = user_hist[-MAX_HISTORY:]
+    # Сохраняем историю
+    user_hist.append({"role": "user",  "parts": [prompt]})
+    user_hist.append({"role": "model", "parts": [answer_text]})
+    if len(user_hist) > MAX_HISTORY:
+        user_hist = user_hist[-MAX_HISTORY:]
+    save_user_history(uid, user_hist)
 
-        save_user_history(uid, user_hist)
-        return True, answer_text
-    except Exception as e:
-        return False, str(e)
+    # В авто-режиме добавляем пометку если использовалась не основная модель
+    if get_auto_mode() and used_model != get_current_model():
+        m_info = MODELS_INFO.get(used_model, {})
+        answer_text += f"\n\n*[авто: использована {m_info.get('label', used_model)}]*"
+
+    return True, answer_text
 
 # --- МОДАЛЬНОЕ ОКНО ДЛЯ ЗАПРОСА К ИИ ---
 class AskAIModal(discord.ui.Modal, title="Nexus AI — Задать вопрос"):
@@ -491,6 +552,30 @@ class AIPanelView(discord.ui.View):
             )
         else:
             embed.description = f"• Модель: **{get_current_model()}**\n• Статус: 🟢 Online\n• Лимиты: неизвестны для этой модели"
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="Авто", style=discord.ButtonStyle.secondary, custom_id="panel_auto", emoji="🔄", row=2)
+    async def auto_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.is_owner(interaction):
+            return await interaction.response.send_message("❌ Только для Owner.", ephemeral=True)
+        new_state = not get_auto_mode()
+        set_auto_mode(new_state)
+        status = "✅ включён" if new_state else "❌ выключен"
+        desc = (
+            f"**Авто-режим {status}**\n\n"
+            f"Текущая основная модель: `{MODELS_INFO.get(get_current_model(), {}).get('label', get_current_model())}`\n\n"
+        )
+        if new_state:
+            desc += "При лимите автоматически переключается на следующую:\n"
+            for i, m in enumerate(AUTO_FALLBACK_ORDER[:8], 1):
+                label = MODELS_INFO.get(m, {}).get("label", m)
+                desc += f"{i}. {label}\n"
+            desc += "*(и далее...)*"
+        embed = discord.Embed(
+            title="🔄 Авто-режим моделей",
+            description=desc,
+            color=0x2ecc71 if new_state else 0xe74c3c
+        )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @discord.ui.button(label="Last Msg", style=discord.ButtonStyle.secondary, custom_id="panel_lastmsg", emoji="📨", row=1)
@@ -657,7 +742,8 @@ async def ensure_ai_panel(channel):
             "⚙️ **Set Model** — сменить модель *(Owner)*\n"
             "🤖 **Модели** — все доступные модели *(Owner)*\n"
             "📊 **Лимиты** — лимиты активной модели *(Owner)*\n"
-            "📨 **Last Msg** — твой последний ответ от ИИ\n\n"
+            "📨 **Last Msg** — твой последний ответ от ИИ\n"
+            "🔄 **Авто** — вкл/выкл авто-переключение моделей *(Owner)*\n\n"
             "*ИИ помнит историю отдельно для каждого пользователя.*"
         ),
         color=0x00FBFF
