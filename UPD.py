@@ -48,7 +48,21 @@ col_config = db["config"]
 col_history = db["roblox_history"]
 col_ai = db["ai_histories"]
 # ─── TOKEN SYSTEM ─────────────────────────────────────────────────────────────
-col_tokens = db["ai_tokens"]
+col_tokens  = db["ai_tokens"]
+col_owners  = db["owner_settings"]   # Персональные настройки для Owner
+
+# ─── Персональные настройки Owner ─────────────────────────────────────────────
+def get_owner_model(uid: int) -> str | None:
+    """Возвращает персональную модель овнера или None."""
+    doc = col_owners.find_one({"_id": str(uid)})
+    return doc.get("model") if doc else None
+
+def set_owner_model(uid: int, model: str):
+    col_owners.update_one({"_id": str(uid)}, {"$set": {"model": model}}, upsert=True)
+
+def clear_owner_model(uid: int):
+    col_owners.update_one({"_id": str(uid)}, {"$unset": {"model": ""}}, upsert=True)
+
 
 TOKEN_COST_AI    = 1
 TOKEN_COST_IMG   = 3
@@ -149,6 +163,27 @@ GROQ_MODELS = {
     "groq/compound", "groq/compound-mini",
 }
 
+# HuggingFace модели через router.huggingface.co (требует HF_TOKEN)
+HF_CHAT_MODELS = {
+    # Топ модели через HF router — OpenAI-compatible API
+    "hf/deepseek-r1",           # DeepSeek-R1 полный — лучший reasoning
+    "hf/deepseek-v3",           # DeepSeek-V3 — лучший general
+    "hf/qwen3-235b",            # Qwen3 235B flagship
+    "hf/llama-3.3-70b",         # Llama 3.3 70B instruct
+    "hf/qwen2.5-72b",           # Qwen2.5 72B — отличный general
+    "hf/mistral-small-3.1",     # Mistral Small 3.1 — быстрый
+}
+
+# Маппинг наших коротких имён → реальные HF model IDs
+HF_MODEL_MAP = {
+    "hf/deepseek-r1":       "deepseek-ai/DeepSeek-R1",
+    "hf/deepseek-v3":       "deepseek-ai/DeepSeek-V3",
+    "hf/qwen3-235b":        "Qwen/Qwen3-235B-A22B-Instruct-2507",
+    "hf/llama-3.3-70b":     "meta-llama/Llama-3.3-70B-Instruct",
+    "hf/qwen2.5-72b":       "Qwen/Qwen2.5-72B-Instruct",
+    "hf/mistral-small-3.1": "mistralai/Mistral-Small-3.1-24B-Instruct-2503",
+}
+
 # Модели с реальным доступом в интернет (поиск встроен в API)
 WEB_SEARCH_MODELS = {"groq/compound", "groq/compound-mini"}
 
@@ -195,21 +230,34 @@ def set_auto_mode(val: bool):
 # Порядок перебора моделей в авто-режиме (от надёжных к запасным)
 # Порядок: сначала некензурированные модели, потом Gemini как fallback
 AUTO_FALLBACK_ORDER = [
-    "deepseek-r1-distill-llama-70b",   # 1. Самый некензурированный
-    "qwen/qwen3-32b",                   # 2. Qwen3 — почти без фильтров
-    "qwen-qwq-32b",                     # 3. Reasoning, мало цензуры
-    "openai/gpt-oss-120b",              # 4. OpenAI open-weight
-    "openai/gpt-oss-20b",               # 5. Быстрый GPT-OSS
-    "moonshotai/kimi-k2-instruct-0905", # 6. Kimi K2
-    "gemini-2.5-flash",                 # 7. Gemini (есть фильтры но хорош)
+    "deepseek-r1-distill-llama-70b",   # 1. Самый некензурированный (Groq)
+    "qwen/qwen3-32b",                   # 2. Qwen3 — почти без фильтров (Groq)
+    "qwen-qwq-32b",                     # 3. Reasoning (Groq)
+    "openai/gpt-oss-120b",              # 4. OpenAI open-weight (Groq)
+    "openai/gpt-oss-20b",               # 5. Быстрый GPT-OSS (Groq)
+    "moonshotai/kimi-k2-instruct-0905", # 6. Kimi K2 (Groq)
+    "gemini-2.5-flash",                 # 7. Gemini (Gemini API)
     "gemini-2.5-flash-lite",
     "gemini-2.0-flash",
-    "llama-3.3-70b-versatile",          # Llama — сильно фильтрует
+    "llama-3.3-70b-versatile",
     "llama-3.1-8b-instant",
-    "gemini-3-flash-preview",
     "meta-llama/llama-4-scout-17b-16e-instruct",
     "meta-llama/llama-4-maverick-17b-128e-instruct",
+    # HuggingFace модели — мощные, как последний fallback
+    "hf/deepseek-v3",
+    "hf/qwen2.5-72b",
+    "hf/llama-3.3-70b",
 ]
+
+# Owner-exclusive модели (только для Ownerов с HF_TOKEN)
+OWNER_EXCLUSIVE_MODELS = {
+    "hf/deepseek-r1":       {"label": "🧠 DeepSeek-R1 (HF)",      "desc": "Лучший reasoning, сравним с o1"},
+    "hf/deepseek-v3":       {"label": "⚡ DeepSeek-V3 (HF)",      "desc": "Лучший general, 671B MoE"},
+    "hf/qwen3-235b":        {"label": "🌟 Qwen3 235B (HF)",       "desc": "Флагман Qwen, топ по всем задачам"},
+    "hf/llama-3.3-70b":     {"label": "🦙 Llama 3.3 70B (HF)",   "desc": "Мощный Llama от Meta"},
+    "hf/qwen2.5-72b":       {"label": "🔷 Qwen2.5 72B (HF)",     "desc": "Точный, хорошо следует инструкциям"},
+    "hf/mistral-small-3.1": {"label": "💨 Mistral Small 3.1 (HF)","desc": "Быстрый, эффективный"},
+}
 MAX_HISTORY = 30
 
 # Информация о моделях: название, лимиты (requests/day, tokens/min)
@@ -541,7 +589,32 @@ async def _call_model(model_name: str, prompt: str, history: list, media_parts: 
     media_parts: список dict {"mime_type": ..., "data": bytes} для вложений."""
     is_gemma = model_name in GEMMA_MODELS
     is_groq  = model_name in GROQ_MODELS
+    is_hf    = model_name in HF_CHAT_MODELS
     media_parts = media_parts or []
+
+    # ── HuggingFace router (OpenAI-compatible) ─────────────────────────────
+    if is_hf:
+        hf_token = os.getenv("HF_TOKEN", "")
+        if not hf_token:
+            raise ValueError("HF_TOKEN не задан — добавь переменную окружения")
+        real_model = HF_MODEL_MAP.get(model_name, model_name)
+        hf_client = OpenAI(
+            base_url="https://router.huggingface.co/v1",
+            api_key=hf_token,
+        )
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        for h in history[-10:]:
+            role = "assistant" if h["role"] == "model" else "user"
+            parts = h.get("parts", [""])
+            messages.append({"role": role, "content": parts[0] if parts else ""})
+        messages.append({"role": "user", "content": prompt})
+        resp = hf_client.chat.completions.create(
+            model=real_model,
+            messages=messages,
+            max_tokens=4096,
+            temperature=0.7,
+        )
+        return resp.choices[0].message.content.strip()
 
     if is_groq:
         if not groq_client:
@@ -648,18 +721,22 @@ def _wants_web_search(prompt: str) -> bool:
 
 
 async def ask_ai(uid, prompt, channel=None, media_parts=None):
-    """Запрос к ИИ. В авто-режиме перебирает модели при лимите."""
+    """Запрос к ИИ. Owner может иметь персональную модель."""
     user_hist = get_user_history(uid)
     media_parts = media_parts or []
 
+    # ── Проверяем персональную модель Owner ──────────────────────────────────
+    owner_model = get_owner_model(uid)
+
     # Список моделей для попытки
-    if get_auto_mode():
+    if owner_model:
+        # Owner с персональной моделью: его модель первая, потом авто fallback
+        order = [owner_model] + [m for m in AUTO_FALLBACK_ORDER if m != owner_model]
+    elif get_auto_mode():
         cur = get_current_model()
         if _wants_web_search(prompt) and cur not in WEB_SEARCH_MODELS:
-            # Поиск в интернете — compound первым
             order = ["groq/compound"] + [m for m in AUTO_FALLBACK_ORDER if m not in WEB_SEARCH_MODELS]
         elif _needs_uncensored(prompt) and cur not in {"deepseek-r1-distill-llama-70b", "qwen/qwen3-32b", "qwen-qwq-32b"}:
-            # Запрос требует некензурированной модели — DeepSeek/Qwen первыми
             uncensored_first = ["deepseek-r1-distill-llama-70b", "qwen/qwen3-32b", "qwen-qwq-32b",
                                  "openai/gpt-oss-120b", "openai/gpt-oss-20b", "moonshotai/kimi-k2-instruct-0905"]
             rest = [m for m in AUTO_FALLBACK_ORDER if m not in uncensored_first]
@@ -1112,6 +1189,30 @@ class AIPanelView(discord.ui.View):
             embed.description = f"• Model: **{get_current_model()}**\n• Status: 🟢 Online"
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    @discord.ui.button(label="My AI Model", style=discord.ButtonStyle.success, custom_id="panel_mymodel", emoji="🎯", row=2)
+    async def mymodel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Только для Owner — выбрать персональную модель ИИ."""
+        if not self.is_owner(interaction):
+            return await interaction.response.send_message("❌ Owner only.", ephemeral=True)
+        uid = interaction.user.id
+        cur = get_owner_model(uid)
+        cur_label = OWNER_EXCLUSIVE_MODELS.get(cur, {}).get("label", cur) if cur else "Auto (global)"
+        desc = f"**Your current model:** {cur_label}\n\n"
+        desc += "**Available exclusive models (HuggingFace):**\n"
+        for key, info in OWNER_EXCLUSIVE_MODELS.items():
+            marker = "✅ " if key == cur else "• "
+            desc += f"{marker}**{info['label']}** — {info['desc']}\n"
+        desc += "\n*Use `!mymodel <model>` in chat to set.*\n"
+        desc += "*Use `!mymodel reset` to go back to Auto.*\n\n"
+        desc += "**Shortcuts:**\n"
+        desc += "`!mymodel deepseek-r1` · `!mymodel deepseek-v3`\n"
+        desc += "`!mymodel qwen3-235b` · `!mymodel llama-3.3-70b`\n"
+        desc += "`!mymodel qwen2.5-72b` · `!mymodel mistral-3.1`\n"
+        desc += "`!mymodel reset` — back to Auto"
+        embed = discord.Embed(title="🎯 Your Personal AI Model", description=desc, color=0xf39c12)
+        embed.set_footer(text="Requires HF_TOKEN env variable | Nexus Core")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
 
 # --- МЕНЮ МОДЕЛЕЙ ---
 class ModelSelectGoogle(discord.ui.Select):
@@ -1294,7 +1395,8 @@ async def ensure_ai_panel(channel):
             "🎁 New users: **10 tokens** | Monthly: **+15 tokens**\n"
             "Tokens stack up and never reset!\n\n"
             "**Owner buttons:**\n"
-            "⚙️ Set Model · 🤖 Models · 📊 Limits"
+            "⚙️ Set Model · 🤖 Models · 📊 Limits\n"
+            "🎯 **My AI Model** — set your personal exclusive AI model"
         ),
         color=0x00FBFF
     )
@@ -1312,7 +1414,7 @@ async def on_message(message):
         content = message.content.lower()
 
         # Команды !panel и !token — пропускаем в process_commands, не удаляем
-        if content.startswith('!panel') or content.startswith('!token'):
+        if content.startswith('!panel') or content.startswith('!token') or content.startswith('!mymodel') or content.startswith('!myai'):
             await bot.process_commands(message)
             return
 
@@ -1463,6 +1565,66 @@ async def on_message(message):
                 await status_msg.delete()
             except:
                 pass
+            return
+
+        # !mymodel — персональная модель Owner
+        if content.startswith(('!mymodel', '!myai', '!моямодель')):
+            try: await message.delete()
+            except: pass
+            if not any(role.id == OWNER_ROLE_ID for role in message.author.roles):
+                await message.channel.send(f"❌ Owner only.", delete_after=8)
+                return
+            parts_cmd = message.content.split(None, 1)
+            arg = parts_cmd[1].strip().lower() if len(parts_cmd) > 1 else ""
+            uid = message.author.id
+            # Маппинг коротких имён
+            shortcuts = {
+                "deepseek-r1":   "hf/deepseek-r1",
+                "deepseek-v3":   "hf/deepseek-v3",
+                "qwen3-235b":    "hf/qwen3-235b",
+                "llama-3.3-70b": "hf/llama-3.3-70b",
+                "qwen2.5-72b":   "hf/qwen2.5-72b",
+                "mistral-3.1":   "hf/mistral-small-3.1",
+                "reset":         None,
+                "auto":          None,
+                "clear":         None,
+            }
+            if not arg:
+                cur = get_owner_model(uid)
+                cur_label = OWNER_EXCLUSIVE_MODELS.get(cur, {}).get("label", cur) if cur else "Auto (global)"
+                await message.channel.send(
+                    f"🎯 {message.author.mention} Your model: **{cur_label}**\n"
+                    f"Use: `!mymodel deepseek-r1 / deepseek-v3 / qwen3-235b / llama-3.3-70b / qwen2.5-72b / mistral-3.1 / reset`",
+                    delete_after=20
+                )
+                return
+            # Resolve model
+            if arg in shortcuts:
+                model_key = shortcuts[arg]
+            elif arg in OWNER_EXCLUSIVE_MODELS:
+                model_key = arg
+            else:
+                await message.channel.send(
+                    f"❌ Unknown model `{arg}`.\n"
+                    f"Options: `deepseek-r1`, `deepseek-v3`, `qwen3-235b`, `llama-3.3-70b`, `qwen2.5-72b`, `mistral-3.1`, `reset`",
+                    delete_after=15
+                )
+                return
+            if model_key is None:
+                clear_owner_model(uid)
+                await message.channel.send(
+                    f"✅ {message.author.mention} Reset to **Auto** (global model)",
+                    delete_after=10
+                )
+            else:
+                set_owner_model(uid, model_key)
+                label = OWNER_EXCLUSIVE_MODELS[model_key]["label"]
+                hf_token = os.getenv("HF_TOKEN", "")
+                note = "" if hf_token else "\n⚠️ **HF_TOKEN not set** — model won't work without it!"
+                await message.channel.send(
+                    f"✅ {message.author.mention} Your AI model set to **{label}**{note}",
+                    delete_after=15
+                )
             return
 
         # !tokens — проверка баланса (любой может)
