@@ -47,6 +47,38 @@ db = mongo_client["nexusbot"]
 col_config = db["config"]
 col_history = db["roblox_history"]
 col_ai = db["ai_histories"]
+# ─── TOKEN SYSTEM ─────────────────────────────────────────────────────────────
+col_tokens = db["ai_tokens"]
+
+TOKEN_COST_AI    = 1
+TOKEN_COST_IMG   = 3
+TOKEN_COST_VIDEO = 5
+TOKEN_NEW_USER   = 10    # первый раз
+TOKEN_MONTHLY    = 15    # каждый месяц
+
+def get_tokens(uid: int) -> int:
+    doc = col_tokens.find_one({"_id": str(uid)})
+    if not doc:
+        # Первое обращение — выдаём стартовые токены
+        col_tokens.insert_one({"_id": str(uid), "tokens": TOKEN_NEW_USER, "joined": time.time()})
+        return TOKEN_NEW_USER
+    return doc.get("tokens", 0)
+
+def set_tokens(uid: int, amount: int):
+    col_tokens.update_one({"_id": str(uid)}, {"$set": {"tokens": max(0, amount)}}, upsert=True)
+
+def add_tokens(uid: int, amount: int):
+    set_tokens(uid, get_tokens(uid) + amount)
+
+def spend_tokens(uid: int, amount: int) -> bool:
+    """Снять токены. Возвращает False если не хватает."""
+    current = get_tokens(uid)
+    if current < amount:
+        return False
+    set_tokens(uid, current - amount)
+    return True
+
+
 
 def db_get(key, default=None):
     doc = col_config.find_one({"_id": key})
@@ -429,77 +461,58 @@ async def send_file_to_webhook(file_bytes, filename, caption, username, avatar_u
 GEMMA_MODELS = {"gemma-3-27b-it", "gemma-3-12b-it", "gemma-3-4b-it"}
 
 async def generate_image(prompt: str) -> bytes:
-    """Генерация изображения через Gemini API (новый SDK google-genai)."""
-    if not AI_KEY:
-        raise ValueError("GEMMA_KEY не задан")
+    """Генерация изображения через Pollinations.AI — бесплатно, без ключей."""
+    import urllib.parse
 
-    if not HAS_NEW_GENAI:
-        raise ValueError("Установи: pip install google-genai")
+    # Pollinations: просто GET-запрос, ключи не нужны
+    # Модели: flux (default), turbo, gptimage, kontext
+    POLLINATIONS_MODELS = ["flux", "turbo", "kontext"]
 
-    loop = asyncio.get_event_loop()
+    encoded = urllib.parse.quote(prompt)
+    last_err = None
 
-    def _gen():
-        client = genai_new.Client(api_key=AI_KEY)
-        last_err = None
-
-        # 1. Пробуем gemini-2.5-flash-image — актуальная бесплатная модель
-        # 2. Fallback: gemini-2.5-flash-preview-04-17 с IMAGE modality
-        # 3. Fallback: generate_images через imagen-3.0-generate-002 (платная)
-        IMAGE_MODELS = [
-            ("generate_content", "gemini-2.5-flash-image"),
-            ("generate_content", "gemini-2.5-flash-preview-image-generation"),
-            ("generate_images",  "imagen-3.0-generate-002"),
-            ("generate_images",  "imagen-3.0-fast-generate-001"),
-        ]
-
-        for method, model_id in IMAGE_MODELS:
+    async with aiohttp.ClientSession() as session:
+        for model in POLLINATIONS_MODELS:
+            url = (
+                f"https://image.pollinations.ai/prompt/{encoded}"
+                f"?model={model}&width=1024&height=1024&nologo=true&private=true&enhance=true"
+            )
             try:
-                if method == "generate_content":
-                    resp = client.models.generate_content(
-                        model=model_id,
-                        contents=prompt,
-                        config=genai_new_types.GenerateContentConfig(
-                            response_modalities=["IMAGE", "TEXT"],
-                        )
-                    )
-                    # Ищем inline_data среди всех частей
-                    candidates = getattr(resp, "candidates", [])
-                    parts = []
-                    if candidates:
-                        parts = getattr(candidates[0].content, "parts", [])
-                    # Также проверяем resp.parts напрямую
-                    if not parts:
-                        parts = getattr(resp, "parts", [])
-                    for part in parts:
-                        idata = getattr(part, "inline_data", None)
-                        if idata and getattr(idata, "data", None):
-                            return idata.data
-                    # Если данных нет — не падаем, пробуем следующую модель
-                    last_err = ValueError(f"{model_id}: ответ без изображения")
-                    continue
-
-                elif method == "generate_images":
-                    result = client.models.generate_images(
-                        model=model_id,
-                        prompt=prompt,
-                        config=genai_new_types.GenerateImagesConfig(
-                            number_of_images=1,
-                            output_mime_type="image/jpeg",
-                        )
-                    )
-                    imgs = getattr(result, "generated_images", [])
-                    if imgs:
-                        return imgs[0].image.image_bytes
-                    last_err = ValueError(f"{model_id}: нет изображений в ответе")
-                    continue
-
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+                    if resp.status == 200:
+                        data = await resp.read()
+                        if len(data) > 1000:  # реальное изображение
+                            return data
+                        last_err = ValueError(f"{model}: слишком маленький ответ ({len(data)} байт)")
+                    else:
+                        last_err = ValueError(f"{model}: HTTP {resp.status}")
             except Exception as e:
                 last_err = e
                 continue
 
-        raise ValueError(f"Не удалось сгенерировать изображение. Ошибка: {last_err}")
+    raise ValueError(f"Pollinations не ответил: {last_err}")
 
-    return await loop.run_in_executor(None, _gen)
+
+
+async def generate_video(prompt: str) -> str:
+    """Генерация видео через Pollinations.AI (seedance model) — бесплатно.
+    Возвращает URL видео (mp4)."""
+    import urllib.parse
+    encoded = urllib.parse.quote(prompt)
+    # Pollinations video endpoint — seedance model, 5 sec clips
+    url = f"https://video.pollinations.ai/{encoded}?model=seedance&duration=5&nologo=true"
+    async with aiohttp.ClientSession() as session:
+        # Video generation takes time — long timeout
+        try:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=180)) as resp:
+                if resp.status == 200:
+                    data = await resp.read()
+                    if len(data) > 10000:  # реальное видео
+                        return data
+                    raise ValueError(f"Ответ слишком маленький ({len(data)} байт)")
+                raise ValueError(f"HTTP {resp.status}: {await resp.text()[:200]}")
+        except aiohttp.ClientError as e:
+            raise ValueError(f"Ошибка соединения: {e}")
 
 
 async def _call_model(model_name: str, prompt: str, history: list, media_parts: list = None) -> str:
@@ -676,7 +689,7 @@ async def ask_ai(uid, prompt, channel=None, media_parts=None):
         try:
             answer_text = await _call_model(model_name, prompt, user_hist, media_parts)
             # Если модель отказала — пробуем следующую
-            if _is_refusal(answer_text):
+            if _is_refusal(answer_text) and model_name not in WEB_SEARCH_MODELS:
                 last_err = f"{model_name} отказал (цензура): {answer_text[:100]}"
                 continue
             used_model = model_name
@@ -888,15 +901,18 @@ class WebSearchModal(discord.ui.Modal, title="🌐 Поиск в интерне�
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
-        # Принудительно использовать compound для поиска
-        cur = get_current_model()
-        set_current_model("groq/compound")
-        success, answer_text = await ask_ai(interaction.user.id, self.query.value)
-        set_current_model(cur)  # восстанавливаем
-        if not success:
-            await interaction.followup.send(f"❌ Ошибка: {answer_text}", ephemeral=True)
-            return
-        await send_ai_reply(interaction, answer_text)
+        uid = interaction.user.id
+        # Напрямую вызываем compound без смены глобальной модели
+        try:
+            answer_text = await _call_model("groq/compound", self.query.value, get_user_history(uid))
+            await send_ai_reply(interaction, answer_text)
+        except Exception as e:
+            # Fallback на обычный ask_ai если compound упал
+            success, answer_text = await ask_ai(uid, self.query.value)
+            if not success:
+                await interaction.followup.send(f"❌ Ошибка: {answer_text}", ephemeral=True)
+                return
+            await send_ai_reply(interaction, answer_text)
 
 
 # --- ПАНЕЛЬ ИИ ---
@@ -907,50 +923,104 @@ class AIPanelView(discord.ui.View):
     def is_owner(self, interaction):
         return any(role.id == OWNER_ROLE_ID for role in interaction.user.roles)
 
-    @discord.ui.button(label="💬 Спросить ИИ", style=discord.ButtonStyle.success, custom_id="panel_askai", emoji="💬", row=0)
+    # Row 0 — main user buttons
+    @discord.ui.button(label="Ask AI", style=discord.ButtonStyle.success, custom_id="panel_askai", emoji="💬", row=0)
     async def askai_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(AskAIModal())
 
-    @discord.ui.button(label="🤖 Универсальный ИИ", style=discord.ButtonStyle.primary, custom_id="panel_universal", emoji="🌟", row=0)
+    @discord.ui.button(label="Universal AI", style=discord.ButtonStyle.primary, custom_id="panel_universal", emoji="🌟", row=0)
     async def universal_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         cur = get_current_model()
         m = MODELS_INFO.get(cur, {})
-        web_note = " • 🌐 Поиск включён" if cur in WEB_SEARCH_MODELS else ""
+        web_note = " • 🌐 Search ON" if cur in WEB_SEARCH_MODELS else ""
+        bal = get_tokens(interaction.user.id)
         embed = discord.Embed(
-            title="🌟 Nexus AI — Универсальный режим",
+            title="\U0001f31f Nexus AI \u2014 Universal Mode",
             description=(
-                f"**Активная модель:** {m.get('label', cur)}{web_note}\n\n"
-                "**💬 Написать** — задай любой вопрос\n"
-                "**🎨 Сгенерировать** — создать изображение по описанию\n"
-                "**🌐 Поиск** — найти актуальную информацию в сети\n"
-                "**📎 Файл/Фото** — как прикрепить файл к запросу"
+                "**Active model:** " + m.get("label", cur) + web_note + "\n"
+                + "**Your tokens:** \U0001f4ce " + str(bal) + "\n\n"
+                + "**\U0001f4ac Write** \u2014 any question\n"
+                + "**\U0001f3a8 Generate image** \u2014 create image by description\n"
+                + "**\U0001f310 Web search** \u2014 find actual info online\n"
+                + "**\U0001f4ce Attach file/photo** \u2014 how to attach files"
             ),
             color=0x9b59b6,
         )
         await interaction.response.send_message(embed=embed, view=UniversalAIView(), ephemeral=True)
 
+    @discord.ui.button(label="History", style=discord.ButtonStyle.secondary, custom_id="panel_lastmsg", emoji="📜", row=0)
+    async def lastmsg_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        uid = interaction.user.id
+        hist = get_user_history(uid)
+        if not hist:
+            return await interaction.response.send_message("📭 You have no chat history yet.", ephemeral=True)
+
+        # Collect up to 7 pairs
+        pairs = []
+        i = len(hist) - 1
+        while i >= 0 and len(pairs) < 7:
+            if hist[i]["role"] == "model" and i > 0 and hist[i-1]["role"] == "user":
+                q_parts = hist[i-1].get("parts", [""])
+                a_parts = hist[i].get("parts", [""])
+                q = q_parts[0] if q_parts else ""
+                a = a_parts[0] if a_parts else ""
+                pairs.append((q, a))
+                i -= 2
+            else:
+                i -= 1
+        pairs.reverse()
+
+        lines = [f"**📜 Last {len(pairs)} conversations:**\n"]
+        for idx, (q, a) in enumerate(pairs, 1):
+            q_s = q[:120] + ("..." if len(q) > 120 else "")
+            a_s = a[:220] + ("..." if len(a) > 220 else "")
+            lines.append(f"**[{idx}] ❓** {q_s}")
+            lines.append(f"**💬** {a_s}\n")
+
+        result = "\n".join(lines)
+        if len(result) > 1900:
+            result = result[:1900] + "..."
+        await interaction.response.send_message(result, ephemeral=True)
+
+    @discord.ui.button(label="My Tokens", style=discord.ButtonStyle.secondary, custom_id="panel_tokens", emoji="💎", row=0)
+    async def tokens_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        uid = interaction.user.id
+        bal = get_tokens(uid)
+        filled = min(bal, 20)
+        bar = "🟦" * filled + "⬛" * (20 - filled)
+        desc = (
+            "**" + interaction.user.display_name + "** — `" + str(bal) + "` tokens\n\n"
+            + bar + "\n\n"
+            + "📝 AI query: **" + str(TOKEN_COST_AI) + "** token\n"
+            + "🎨 Image gen: **" + str(TOKEN_COST_IMG) + "** tokens\n"
+            + "🎬 Video gen: **" + str(TOKEN_COST_VIDEO) + "** tokens\n\n"
+            + "*Monthly refill: +" + str(TOKEN_MONTHLY) + " tokens (stack up)*"
+        )
+        embed = discord.Embed(title="💎 Token Balance", description=desc, color=0x00FBFF)
+        embed.set_footer(text="Nexus Core | Token System")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    # Row 1 — admin buttons
     @discord.ui.button(label="Set Model", style=discord.ButtonStyle.primary, custom_id="panel_setmodel", emoji="⚙️", row=1)
     async def setmodel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.is_owner(interaction):
-            return await interaction.response.send_message("❌ Только для Owner.", ephemeral=True)
+            return await interaction.response.send_message("❌ Owner only.", ephemeral=True)
         m = MODELS_INFO.get(get_current_model(), {})
-        label = m.get("label", get_current_model())
         embed = discord.Embed(
-            title="⚙️ Смена модели ИИ",
-            description=f"Сейчас активна: {label} ({get_current_model()})\n\nВыбери новую модель из списка:",
+            title="⚙️ Change AI Model",
+            description=f"Current: **{m.get('label', get_current_model())}**\nSelect a new model:",
             color=0x2ecc71
         )
         await interaction.response.send_message(embed=embed, view=ModelSelectView(), ephemeral=True)
 
-    @discord.ui.button(label="Модели", style=discord.ButtonStyle.secondary, custom_id="panel_model", emoji="🤖", row=1)
+    @discord.ui.button(label="Models", style=discord.ButtonStyle.secondary, custom_id="panel_model", emoji="🤖", row=1)
     async def model_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.is_owner(interaction):
-            return await interaction.response.send_message("❌ Только для Owner.", ephemeral=True)
-        embed = discord.Embed(title="🤖 Все доступные модели Nexus AI", color=0x3498db)
+            return await interaction.response.send_message("❌ Owner only.", ephemeral=True)
+        embed = discord.Embed(title="🤖 Available Nexus AI Models", color=0x3498db)
         cur = get_current_model()
         m_cur = MODELS_INFO.get(cur, {})
-        desc = f"**Активная:** `{m_cur.get('label', cur)}` ({m_cur.get('provider','?')})`\n\n"
-        desc += "**🌐 Google:**\n"
+        desc = f"**Active:** `{m_cur.get('label', cur)}`\n\n**🌐 Google:**\n"
         for key, m in MODELS_INFO.items():
             if m.get("provider") == "Google":
                 desc += f"• **{m['label']}** — {m['desc']} | `{m['rpd']}` req/day\n"
@@ -959,57 +1029,27 @@ class AIPanelView(discord.ui.View):
             if m.get("provider") == "Groq":
                 desc += f"• **{m['label']}** — {m['desc']} | `{m['rpd']}` req/day\n"
         embed.description = desc[:4000]
-        embed.set_footer(text="Сменить модель может только Owner через кнопку Set Model")
+        embed.set_footer(text="Only Owner can change model via Set Model button")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @discord.ui.button(label="Лимиты", style=discord.ButtonStyle.secondary, custom_id="panel_limit", emoji="📊", row=1)
+    @discord.ui.button(label="Limits", style=discord.ButtonStyle.secondary, custom_id="panel_limit", emoji="📊", row=1)
     async def limit_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.is_owner(interaction):
-            return await interaction.response.send_message("❌ Только для Owner.", ephemeral=True)
+            return await interaction.response.send_message("❌ Owner only.", ephemeral=True)
         m = MODELS_INFO.get(get_current_model())
-        embed = discord.Embed(title="📊 Лимиты активной модели", color=0x9b59b6)
+        embed = discord.Embed(title="📊 Active Model Limits", color=0x9b59b6)
         if m:
             embed.description = (
-                f"**Модель:** `{m['label']}`\n"
-                f"**Статус:** 🟢 Online\n\n"
-                f"• Запросов в минуту: **{m['rpm']}**\n"
-                f"• Запросов в день: **{m['rpd']}**\n"
-                f"• Токенов в минуту: **{m['tpm']:,}**\n\n"
-                f"*Лимиты установлены Google AI Free Tier*"
+                f"**Model:** `{m['label']}`\n"
+                f"**Status:** 🟢 Online\n\n"
+                f"• Requests/min: **{m['rpm']}**\n"
+                f"• Requests/day: **{m['rpd']}**\n"
+                f"• Tokens/min: **{m['tpm']:,}**"
             )
         else:
-            embed.description = f"• Модель: **{get_current_model()}**\n• Статус: 🟢 Online\n• Лимиты: неизвестны для этой модели"
+            embed.description = f"• Model: **{get_current_model()}**\n• Status: 🟢 Online"
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @discord.ui.button(label="📨 История", style=discord.ButtonStyle.secondary, custom_id="panel_lastmsg", emoji="📨", row=0)
-    async def lastmsg_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        uid = interaction.user.id
-        hist = get_user_history(uid)  # всегда читаем свежие данные из MongoDB
-        if not hist:
-            return await interaction.response.send_message("У тебя ещё нет истории диалога.", ephemeral=True)
-
-        # Берём последние 3 пары вопрос/ответ
-        pairs = []
-        i = len(hist) - 1
-        while i >= 0 and len(pairs) < 3:
-            if hist[i]["role"] == "model" and i > 0 and hist[i-1]["role"] == "user":
-                q = hist[i-1]["parts"][0] if hist[i-1]["parts"] else ""
-                a = hist[i]["parts"][0] if hist[i]["parts"] else ""
-                pairs.append((q, a))
-                i -= 2
-            else:
-                i -= 1
-
-        pairs.reverse()
-        result = "**Последние диалоги с Nexus AI:**\n\n"
-        for q, a in pairs:
-            q_short = q[:100] + ("..." if len(q) > 100 else "")
-            a_short = a[:300] + ("..." if len(a) > 300 else "")
-            result += f"❓ **{q_short}**\n💬 {a_short}\n\n"
-
-        if len(result) > 1900:
-            result = result[:1900] + "..."
-        await interaction.response.send_message(result, ephemeral=True)
 
 # --- МЕНЮ МОДЕЛЕЙ ---
 class ModelSelectGoogle(discord.ui.Select):
@@ -1175,21 +1215,24 @@ async def ensure_ai_panel(channel):
 
     # Создаём новую панель
     embed = discord.Embed(
-        title="🤖 Nexus AI | Panel",
+        title="⚡ Nexus AI",
         description=(
-            "**💬 Спросить ИИ** — быстрый приватный вопрос\n"
-            "**🌟 Универсальный ИИ** — полный режим:\n"
-            "┣ 💬 Написать — любой вопрос\n"
-            "┣ 🎨 Сгенерировать картинку\n"
-            "┣ 🌐 Поиск в интернете\n"
-            "┗ 📎 Прикрепить файл или фото\n\n"
-            "**Команды в чате:**\n"
-            "`?ai <вопрос>` + файл/фото — ответ в чат\n"
-            "`?img <описание>` — сгенерировать изображение\n"
-            "`?clear` — очистить историю\n\n"
-            "**Owner:**\n"
-            "⚙️ Set Model · 🤖 Модели · 📊 Лимиты · 📨 Last Msg\n\n"
-            "*ИИ помнит историю отдельно для каждого пользователя.*"
+            "**Buttons (everyone):**\n"
+            "💬 **Ask AI** — quick private question\n"
+            "🌟 **Universal AI** — full mode (image, search, file)\n"
+            "📜 **History** — your last 7 conversations\n"
+            "💎 **My Tokens** — check your token balance\n\n"
+            "**Chat commands:**\n"
+            "`?ai <question>` — AI answer in chat (**1 token**)\n"
+            "`?img <prompt>` — generate image (**3 tokens**)\n"
+            "`?video <prompt>` — generate video (**5 tokens**)\n"
+            "`?clear` — clear your chat history\n"
+            "`!tokens` — show your token balance\n\n"
+            "**Token system:**\n"
+            "🎁 New users: **10 tokens** | Monthly: **+15 tokens**\n"
+            "Tokens stack up and never reset!\n\n"
+            "**Owner buttons:**\n"
+            "⚙️ Set Model · 🤖 Models · 📊 Limits"
         ),
         color=0x00FBFF
     )
@@ -1211,12 +1254,24 @@ async def on_message(message):
             await bot.process_commands(message)
             return
 
-        # ?ai команда — ответ в чат через вебхук
+        # ?ai команда — ответ в чат
         if content.startswith(('?ai ', '?аи ')):
             prompt = message.content[4:].strip()
             if not prompt and not message.attachments:
                 try: await message.delete()
                 except: pass
+                return
+            # Token check
+            uid_check = message.author.id
+            bal = get_tokens(uid_check)
+            if bal < TOKEN_COST_AI:
+                try: await message.delete()
+                except: pass
+                await message.channel.send(
+                    f"❌ {message.author.mention} Not enough tokens! You have **{bal}** tokens, need **{TOKEN_COST_AI}**. "
+                    f"Tokens refill monthly. Use `!tokens` to check balance.",
+                    delete_after=15
+                )
                 return
 
             # Собираем вложения (фото, файлы, документы)
@@ -1255,6 +1310,8 @@ async def on_message(message):
             async with message.channel.typing():
                 success, answer_text = await ask_ai(message.author.id, full_prompt, media_parts=media_parts)
 
+            if success:
+                spend_tokens(message.author.id, TOKEN_COST_AI)
             if not success:
                 await message.channel.send(
                     f"❌ {message.author.mention} Ошибка Nexus AI: {answer_text}",
@@ -1303,6 +1360,15 @@ async def on_message(message):
                 try: await message.delete()
                 except: pass
                 return
+            bal = get_tokens(message.author.id)
+            if bal < TOKEN_COST_IMG:
+                try: await message.delete()
+                except: pass
+                await message.channel.send(
+                    f"❌ {message.author.mention} Not enough tokens! You have **{bal}**, need **{TOKEN_COST_IMG}** for image gen. Use `!tokens` to check balance.",
+                    delete_after=15
+                )
+                return
             try:
                 await message.delete()
             except:
@@ -1310,14 +1376,79 @@ async def on_message(message):
             async with message.channel.typing():
                 try:
                     img_bytes = await generate_image(img_prompt)
+                    spend_tokens(message.author.id, TOKEN_COST_IMG)
                     await message.channel.send(
-                        f"🎨 {message.author.mention} — *{img_prompt[:100]}*",
+                        f"🎨 {message.author.mention} **-{TOKEN_COST_IMG} tokens** — *{img_prompt[:100]}*",
                         file=discord.File(fp=io.BytesIO(img_bytes), filename="nexus_ai.png")
                     )
                 except Exception as e:
                     await message.channel.send(
-                        f"❌ {message.author.mention} Ошибка генерации: {e}", delete_after=20
+                        f"❌ {message.author.mention} Image error: {e}", delete_after=20
                     )
+            return
+
+        # ?video / ?vid — генерация видео
+        if content.startswith(('?video ', '?vid ', '?видео ')):
+            parts = message.content.split(' ', 1)
+            vid_prompt = parts[1].strip() if len(parts) > 1 else ""
+            if not vid_prompt:
+                try: await message.delete()
+                except: pass
+                return
+            bal = get_tokens(message.author.id)
+            if bal < TOKEN_COST_VIDEO:
+                try: await message.delete()
+                except: pass
+                await message.channel.send(
+                    f"❌ {message.author.mention} Not enough tokens! You have **{bal}**, need **{TOKEN_COST_VIDEO}** for video gen. Use `!tokens` to check balance.",
+                    delete_after=15
+                )
+                return
+            try:
+                await message.delete()
+            except:
+                pass
+            status_msg = await message.channel.send(f"🎬 {message.author.mention} Generating video... *(~30-60 sec)*")
+            try:
+                video_bytes = await generate_video(vid_prompt)
+                spend_tokens(message.author.id, TOKEN_COST_VIDEO)
+                await message.channel.send(
+                    f"🎬 {message.author.mention} **-{TOKEN_COST_VIDEO} tokens** — *{vid_prompt[:100]}*",
+                    file=discord.File(fp=io.BytesIO(video_bytes), filename="nexus_video.mp4")
+                )
+            except Exception as e:
+                await message.channel.send(
+                    f"❌ {message.author.mention} Video error: {e}", delete_after=25
+                )
+            try:
+                await status_msg.delete()
+            except:
+                pass
+            return
+
+        # !tokens — проверка баланса (любой может)
+        if content.startswith(('!tokens', '!tokeny', '!токены', '!token balance', '!баланс')):
+            try: await message.delete()
+            except: pass
+            bal = get_tokens(message.author.id)
+            bar_filled = "🟦" * min(bal, 20)
+            bar_empty  = "⬛" * max(0, 20 - min(bal, 20))
+            bar = bar_filled + bar_empty
+            tok_desc = (
+                "**" + message.author.display_name + "** — `" + str(bal) + "` tokens\n\n"
+                + bar + "\n\n"
+                + "📝 AI query: **" + str(TOKEN_COST_AI) + "** token\n"
+                + "🎨 Image gen: **" + str(TOKEN_COST_IMG) + "** tokens\n"
+                + "🎬 Video gen: **" + str(TOKEN_COST_VIDEO) + "** tokens\n\n"
+                + "*Monthly refill: +" + str(TOKEN_MONTHLY) + " tokens (stacks up)*"
+            )
+            embed = discord.Embed(
+                title="💎 Your Token Balance",
+                description=tok_desc,
+                color=0x00FBFF
+            )
+            embed.set_footer(text="Nexus Core | Token System")
+            await message.channel.send(embed=embed, delete_after=30)
             return
 
         # ?clear команда
@@ -1343,6 +1474,34 @@ async def on_message(message):
     await bot.process_commands(message)
 
 # --- КОМАНДЫ ---
+@bot.command(name="token")
+async def token_cmd(ctx, member: discord.Member = None, amount: int = None):
+    """Owner only: !token @user 50 — give tokens to a user"""
+    try: await ctx.message.delete()
+    except: pass
+    # Only Owner role
+    if not any(role.id == OWNER_ROLE_ID for role in ctx.author.roles):
+        return
+    if not member or amount is None:
+        await ctx.send(
+            f"Usage: `!token @user <amount>`\nExample: `!token @Alex 50`",
+            delete_after=10
+        )
+        return
+    add_tokens(member.id, amount)
+    new_bal = get_tokens(member.id)
+    embed = discord.Embed(
+        title="💎 Tokens Added",
+        description=(
+            f"**{member.display_name}** received **+{amount}** tokens\n"
+            f"New balance: **{new_bal}** tokens"
+        ),
+        color=0x2ecc71
+    )
+    embed.set_footer(text=f"Added by {ctx.author.display_name} | Nexus Core")
+    await ctx.send(embed=embed, delete_after=20)
+
+
 @bot.command()
 async def panel(ctx):
     """Пересоздать/обновить панель ИИ — только для Owner"""
@@ -1520,6 +1679,26 @@ async def check_roblox():
         if channel:
             last_versions["live"], last_versions["future"] = live, future
             await update_roblox_msg(channel, live, future, is_update=True)
+
+
+@tasks.loop(hours=24)
+async def monthly_token_refill():
+    """Начисляем 15 токенов всем раз в месяц (каждые 30 дней)."""
+    now = time.time()
+    THIRTY_DAYS = 30 * 24 * 3600
+    last_refill_key = "last_monthly_refill"
+    last = db_get(last_refill_key, 0)
+    if now - last < THIRTY_DAYS:
+        return
+    db_set(last_refill_key, now)
+    # Начисляем всем существующим пользователям
+    count = 0
+    for doc in col_tokens.find():
+        uid = doc["_id"]
+        new_bal = doc.get("tokens", 0) + TOKEN_MONTHLY
+        col_tokens.update_one({"_id": uid}, {"$set": {"tokens": new_bal}})
+        count += 1
+    print(f"[tokens] Monthly refill: +{TOKEN_MONTHLY} to {count} users")
 
 @bot.event
 async def on_ready():
