@@ -461,58 +461,98 @@ async def send_file_to_webhook(file_bytes, filename, caption, username, avatar_u
 GEMMA_MODELS = {"gemma-3-27b-it", "gemma-3-12b-it", "gemma-3-4b-it"}
 
 async def generate_image(prompt: str) -> bytes:
-    """Генерация изображения через Pollinations.AI — бесплатно, без ключей."""
+    """Генерация изображения — несколько бесплатных сервисов с fallback."""
     import urllib.parse
-
-    # Pollinations: просто GET-запрос, ключи не нужны
-    # Модели: flux (default), turbo, gptimage, kontext
-    POLLINATIONS_MODELS = ["flux", "turbo", "kontext"]
-
     encoded = urllib.parse.quote(prompt)
     last_err = None
 
-    async with aiohttp.ClientSession() as session:
-        for model in POLLINATIONS_MODELS:
-            url = (
-                f"https://image.pollinations.ai/prompt/{encoded}"
-                f"?model={model}&width=1024&height=1024&nologo=true&private=true&enhance=true"
-            )
+    async with aiohttp.ClientSession(
+        connector=aiohttp.TCPConnector(ssl=False, limit=10),
+        timeout=aiohttp.ClientTimeout(total=90)
+    ) as session:
+
+        # ── 1. gen.pollinations.ai (новый unified endpoint, стабильнее) ────
+        for model in ["flux", "turbo", "stable-diffusion-3-5"]:
+            url = f"https://gen.pollinations.ai/image/{encoded}?model={model}&width=1024&height=1024&nologo=true"
             try:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+                async with session.get(url) as resp:
                     if resp.status == 200:
+                        content_type = resp.content_type or ""
                         data = await resp.read()
-                        if len(data) > 1000:  # реальное изображение
+                        if len(data) > 5000 and ("image" in content_type or data[:4] in (b"\xff\xd8\xff\xe0", b"\x89PNG", b"GIF8", b"RIFF", b"\x89PNG")):
                             return data
-                        last_err = ValueError(f"{model}: слишком маленький ответ ({len(data)} байт)")
+                        last_err = ValueError(f"gen/{model}: маленький ответ {len(data)}b")
                     else:
-                        last_err = ValueError(f"{model}: HTTP {resp.status}")
+                        last_err = ValueError(f"gen/{model}: HTTP {resp.status}")
             except Exception as e:
                 last_err = e
-                continue
+            continue
 
-    raise ValueError(f"Pollinations не ответил: {last_err}")
+        # ── 2. image.pollinations.ai (старый endpoint, иногда 530) ─────────
+        for model in ["flux", "turbo"]:
+            url = f"https://image.pollinations.ai/prompt/{encoded}?model={model}&width=1024&height=1024&nologo=true"
+            try:
+                async with session.get(url) as resp:
+                    if resp.status == 200:
+                        data = await resp.read()
+                        if len(data) > 5000:
+                            return data
+                        last_err = ValueError(f"old/{model}: маленький ответ")
+                    else:
+                        last_err = ValueError(f"old/{model}: HTTP {resp.status}")
+            except Exception as e:
+                last_err = e
+
+        # ── 3. Stability AI Community (SDXL, бесплатный tier) ─────────────
+        stability_key = os.getenv("STABILITY_KEY", "")
+        if stability_key:
+            url = "https://api.stability.ai/v1/generation/stable-diffusion-xl-1024-v1-0/text-to-image"
+            try:
+                async with session.post(url,
+                    headers={"Authorization": f"Bearer {stability_key}", "Content-Type": "application/json"},
+                    json={"text_prompts": [{"text": prompt}], "samples": 1, "steps": 30}
+                ) as resp:
+                    if resp.status == 200:
+                        js = await resp.json()
+                        import base64
+                        img_b64 = js["artifacts"][0]["base64"]
+                        return base64.b64decode(img_b64)
+                    last_err = ValueError(f"stability: HTTP {resp.status}")
+            except Exception as e:
+                last_err = e
+
+    raise ValueError(f"Все сервисы недоступны. Последняя ошибка: {last_err}")
 
 
-
-async def generate_video(prompt: str) -> str:
-    """Генерация видео через Pollinations.AI (seedance model) — бесплатно.
-    Возвращает URL видео (mp4)."""
+async def generate_video(prompt: str) -> bytes:
+    """Генерация видео через Pollinations gen endpoint — бесплатно."""
     import urllib.parse
     encoded = urllib.parse.quote(prompt)
-    # Pollinations video endpoint — seedance model, 5 sec clips
-    url = f"https://video.pollinations.ai/{encoded}?model=seedance&duration=5&nologo=true"
-    async with aiohttp.ClientSession() as session:
-        # Video generation takes time — long timeout
-        try:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=180)) as resp:
-                if resp.status == 200:
-                    data = await resp.read()
-                    if len(data) > 10000:  # реальное видео
-                        return data
-                    raise ValueError(f"Ответ слишком маленький ({len(data)} байт)")
-                raise ValueError(f"HTTP {resp.status}: {await resp.text()[:200]}")
-        except aiohttp.ClientError as e:
-            raise ValueError(f"Ошибка соединения: {e}")
+    last_err = None
+
+    async with aiohttp.ClientSession(
+        connector=aiohttp.TCPConnector(ssl=False),
+        timeout=aiohttp.ClientTimeout(total=240)
+    ) as session:
+
+        # gen.pollinations.ai/video endpoint (seedance)
+        for model in ["seedance", "wan"]:
+            url = f"https://gen.pollinations.ai/video/{encoded}?model={model}&duration=5"
+            try:
+                async with session.get(url) as resp:
+                    if resp.status == 200:
+                        ctype = resp.content_type or ""
+                        data = await resp.read()
+                        if len(data) > 50000 and ("video" in ctype or data[:4] in (b"\x00\x00\x00", b"ftyp"[:4]) or b"ftyp" in data[:20]):
+                            return data
+                        last_err = ValueError(f"{model}: маленький ответ {len(data)}b content-type={ctype}")
+                    else:
+                        text = await resp.text()
+                        last_err = ValueError(f"{model}: HTTP {resp.status} — {text[:150]}")
+            except Exception as e:
+                last_err = e
+
+    raise ValueError(f"Генерация видео недоступна: {last_err}")
 
 
 async def _call_model(model_name: str, prompt: str, history: list, media_parts: list = None) -> str:
