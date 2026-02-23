@@ -6,7 +6,12 @@ import json
 import os
 import time
 import re
+import io
+import asyncio
+import aiohttp
+import base64
 import google.generativeai as genai
+from google.generativeai import types as genai_types
 from openai import OpenAI  # для Groq (OpenAI-совместимый)
 from flask import Flask, request, jsonify
 from threading import Thread
@@ -377,10 +382,28 @@ def send_file_to_webhook(file_bytes, filename, caption, username, avatar_url):
 # --- ФУНКЦИЯ ЗАПРОСА К ИИ ---
 GEMMA_MODELS = {"gemma-3-27b-it", "gemma-3-12b-it", "gemma-3-4b-it"}
 
-async def _call_model(model_name: str, prompt: str, history: list) -> str:
-    """Вызвать конкретную модель. Возвращает текст или бросает исключение."""
+async def generate_image(prompt: str) -> bytes:
+    """Генерация изображения через Gemini Imagen. Возвращает bytes PNG."""
+    if not AI_KEY:
+        raise ValueError("GEMMA_KEY не задан")
+    # Используем Imagen через genai
+    model = genai.ImageGenerationModel("imagen-3.0-generate-001")
+    result = model.generate_images(
+        prompt=prompt,
+        number_of_images=1,
+        safety_filter_level="block_only_high",
+    )
+    if result.images:
+        return result.images[0]._image_bytes
+    raise ValueError("Imagen не вернул изображение")
+
+
+async def _call_model(model_name: str, prompt: str, history: list, media_parts: list = None) -> str:
+    """Вызвать конкретную модель. Возвращает текст или бросает исключение.
+    media_parts: список dict {"mime_type": ..., "data": bytes} для вложений."""
     is_gemma = model_name in GEMMA_MODELS
     is_groq  = model_name in GROQ_MODELS
+    media_parts = media_parts or []
 
     if is_groq:
         if not groq_client:
@@ -391,7 +414,19 @@ async def _call_model(model_name: str, prompt: str, history: list) -> str:
         for item in history[-(MAX_HISTORY - 2):]:
             role = "assistant" if item["role"] == "model" else "user"
             messages.append({"role": role, "content": item["parts"][0]})
-        messages.append({"role": "user", "content": prompt})
+        # Groq: если есть медиа — добавляем как base64 (только изображения)
+        if media_parts:
+            user_content = [{"type": "text", "text": prompt}]
+            for mp in media_parts:
+                if mp["mime_type"].startswith("image/"):
+                    b64 = base64.b64encode(mp["data"]).decode()
+                    user_content.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mp['mime_type']};base64,{b64}"}
+                    })
+            messages.append({"role": "user", "content": user_content})
+        else:
+            messages.append({"role": "user", "content": prompt})
         resp = groq_client.chat.completions.create(
             model=model_name, messages=messages,
             max_tokens=4096, temperature=0.8,
@@ -418,13 +453,21 @@ async def _call_model(model_name: str, prompt: str, history: list) -> str:
     if len(hist_use) > MAX_HISTORY - 2:
         hist_use = hist_use[-(MAX_HISTORY - 2):]
     chat = mdl.start_chat(history=hist_use)
-    resp = chat.send_message(actual)
+    # Добавляем медиа-части если есть
+    if media_parts:
+        msg_parts = [actual]
+        for mp in media_parts:
+            msg_parts.append({"mime_type": mp["mime_type"], "data": mp["data"]})
+        resp = chat.send_message(msg_parts)
+    else:
+        resp = chat.send_message(actual)
     return resp.text
 
 
-async def ask_ai(uid, prompt, channel=None):
+async def ask_ai(uid, prompt, channel=None, media_parts=None):
     """Запрос к ИИ. В авто-режиме перебирает модели при лимите."""
     user_hist = get_user_history(uid)
+    media_parts = media_parts or []
 
     # Список моделей для попытки
     if get_auto_mode():
@@ -439,7 +482,7 @@ async def ask_ai(uid, prompt, channel=None):
 
     for model_name in order:
         try:
-            answer_text = await _call_model(model_name, prompt, user_hist)
+            answer_text = await _call_model(model_name, prompt, user_hist, media_parts)
             used_model = model_name
             break
         except Exception as e:
@@ -467,56 +510,169 @@ async def ask_ai(uid, prompt, channel=None):
 
     return True, answer_text
 
-# --- МОДАЛЬНОЕ ОКНО ДЛЯ ЗАПРОСА К ИИ ---
+# ─── Хелпер: форматировать и отправить ответ ИИ ───────────────────────────
+async def send_ai_reply(interaction, answer_text: str, ephemeral=True):
+    """Отправить ответ ИИ через followup с поддержкой кода и файлов."""
+    lang, code = extract_code_info(answer_text)
+    text_only = re.sub(r"```[\w]*\n[\s\S]*?```", "", answer_text).strip()
+    if code:
+        if len(code) < 300:
+            ext, _ = get_file_info(lang)
+            inline = f"```{lang or ext}\n{code}\n```"
+            msg = (text_only + "\n" + inline) if text_only else inline
+            preview = msg[:1900] + ("..." if len(msg) > 1900 else "")
+            await interaction.followup.send(content=f"**Nexus AI:**\n{preview}", ephemeral=ephemeral)
+        else:
+            ext, label_f = get_file_info(lang)
+            filename = f"{label_f}.{ext}"
+            msg = (text_only + "\n*(Код — файлом)*") if text_only else "*(Код — файлом)*"
+            await interaction.followup.send(
+                content=f"**Nexus AI:**\n{msg}",
+                file=discord.File(fp=io.BytesIO(code.encode("utf-8")), filename=filename),
+                ephemeral=ephemeral,
+            )
+    else:
+        preview = answer_text[:1900] + ("..." if len(answer_text) > 1900 else "")
+        await interaction.followup.send(content=f"**Nexus AI:**\n{preview}", ephemeral=ephemeral)
+
+
+# ─── Модальное окно: простой вопрос (без файлов) ──────────────────────────
 class AskAIModal(discord.ui.Modal, title="Nexus AI — Задать вопрос"):
     prompt = discord.ui.TextInput(
         label="Твой вопрос или запрос",
         style=discord.TextStyle.paragraph,
         placeholder="Напиши сюда что угодно...",
         required=True,
-        max_length=2000
+        max_length=2000,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        success, answer_text = await ask_ai(interaction.user.id, self.prompt.value)
+        if not success:
+            await interaction.followup.send(f"❌ Ошибка: {answer_text}", ephemeral=True)
+            return
+        await send_ai_reply(interaction, answer_text)
+
+
+# ─── Модальное окно: универсальный запрос (текст; файлы прикрепляются отдельно) ───
+class UniversalAITextModal(discord.ui.Modal, title="Nexus AI — Универсальный запрос"):
+    prompt = discord.ui.TextInput(
+        label="Вопрос / задача",
+        style=discord.TextStyle.paragraph,
+        placeholder="Спроси что угодно, или напиши !img <описание> для генерации картинки",
+        required=True,
+        max_length=2000,
     )
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
         uid = interaction.user.id
-        success, answer_text = await ask_ai(uid, self.prompt.value)
+        text = self.prompt.value.strip()
 
+        # Генерация изображения
+        if text.lower().startswith(("!img ", "!имг ", "сгенерируй ", "нарисуй ")):
+            img_prompt = re.sub(r"^(!img |!имг |сгенерируй |нарисуй )", "", text, flags=re.IGNORECASE).strip()
+            try:
+                img_bytes = await generate_image(img_prompt)
+                await interaction.followup.send(
+                    content=f"🎨 *{img_prompt[:100]}*",
+                    file=discord.File(fp=io.BytesIO(img_bytes), filename="nexus_ai.png"),
+                    ephemeral=True,
+                )
+            except Exception as e:
+                await interaction.followup.send(f"❌ Ошибка генерации: {e}", ephemeral=True)
+            return
+
+        success, answer_text = await ask_ai(uid, text)
         if not success:
             await interaction.followup.send(f"❌ Ошибка: {answer_text}", ephemeral=True)
             return
+        await send_ai_reply(interaction, answer_text)
 
-        lang, code = extract_code_info(answer_text)
 
-        text_only = re.sub(r"```[\w]*\n[\s\S]*?```", "", answer_text).strip()
-        if code:
-            if len(code) < 300:
-                # Короткий код — красиво в сообщение
-                ext, _ = get_file_info(lang)
-                inline = f"```{lang or ext}\n{code}\n```"
-                msg = (text_only + "\n" + inline) if text_only else inline
-                preview = msg[:1900] + ("..." if len(msg) > 1900 else "")
-                await interaction.followup.send(
-                    content=f"**Ответ Nexus AI:**\n{preview}",
-                    ephemeral=True
-                )
-            else:
-                # Длинный код — файлом
-                ext, label = get_file_info(lang)
-                filename = f"{label}.{ext}"
-                msg = (text_only + "\n*(Код отправлен файлом)*") if text_only else "*(Код отправлен файлом)*"
-                import io
-                await interaction.followup.send(
-                    content=f"**Ответ Nexus AI:**\n{msg}",
-                    file=discord.File(fp=io.BytesIO(code.encode('utf-8')), filename=filename),
-                    ephemeral=True
-                )
-        else:
-            preview = answer_text[:1900] + ("..." if len(answer_text) > 1900 else "")
+# ─── View: универсальный ИИ (файлы через повторное сообщение) ─────────────
+class UniversalAIView(discord.ui.View):
+    """Появляется как ephemeral сообщение — пользователь прикрепляет файлы
+    в AI-канал командой ?ai, либо использует кнопки."""
+    def __init__(self):
+        super().__init__(timeout=180)
+
+    @discord.ui.button(label="💬 Написать", style=discord.ButtonStyle.success, custom_id="uni_text", row=0)
+    async def text_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(UniversalAITextModal())
+
+    @discord.ui.button(label="🎨 Сгенерировать картинку", style=discord.ButtonStyle.primary, custom_id="uni_img", row=0)
+    async def img_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ImageGenModal())
+
+    @discord.ui.button(label="🌐 Поиск в интернете", style=discord.ButtonStyle.secondary, custom_id="uni_web", row=1)
+    async def web_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(WebSearchModal())
+
+    @discord.ui.button(label="📎 Прикрепить файл/фото", style=discord.ButtonStyle.secondary, custom_id="uni_file", row=1)
+    async def file_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = discord.Embed(
+            title="📎 Как прикрепить файл или фото",
+            description=(
+                "Просто отправь сообщение в этот канал:\n\n"
+                "```?ai <вопрос>```\n"
+                "И **прикрепи файл/фото** к этому сообщению.\n\n"
+                "**Поддерживается:**\n"
+                "🖼 Изображения — бот их видит и анализирует\n"
+                "📄 `.txt .py .js .ts .json .md .csv .pdf` — читает содержимое\n\n"
+                "**Пример:**\n"
+                "`?ai что на этом скрине?` + прикреплённое фото"
+            ),
+            color=0x3498db,
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+# ─── Модалки для генерации и поиска ───────────────────────────────────────
+class ImageGenModal(discord.ui.Modal, title="🎨 Генерация изображения"):
+    prompt = discord.ui.TextInput(
+        label="Описание картинки",
+        style=discord.TextStyle.paragraph,
+        placeholder="Красивый закат над горами в аниме стиле...",
+        required=True,
+        max_length=1000,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            img_bytes = await generate_image(self.prompt.value)
             await interaction.followup.send(
-                content=f"**Ответ Nexus AI:**\n{preview}",
-                ephemeral=True
+                content=f"🎨 *{self.prompt.value[:100]}*",
+                file=discord.File(fp=io.BytesIO(img_bytes), filename="nexus_ai.png"),
+                ephemeral=True,
             )
+        except Exception as e:
+            await interaction.followup.send(f"❌ Ошибка генерации: {e}", ephemeral=True)
+
+
+class WebSearchModal(discord.ui.Modal, title="🌐 Поиск в интернете"):
+    query = discord.ui.TextInput(
+        label="Что найти?",
+        style=discord.TextStyle.short,
+        placeholder="последние новости AI, погода в Москве...",
+        required=True,
+        max_length=500,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        # Принудительно использовать compound для поиска
+        cur = get_current_model()
+        set_current_model("groq/compound")
+        success, answer_text = await ask_ai(interaction.user.id, self.query.value)
+        set_current_model(cur)  # восстанавливаем
+        if not success:
+            await interaction.followup.send(f"❌ Ошибка: {answer_text}", ephemeral=True)
+            return
+        await send_ai_reply(interaction, answer_text)
+
 
 # --- ПАНЕЛЬ ИИ ---
 class AIPanelView(discord.ui.View):
@@ -526,9 +682,27 @@ class AIPanelView(discord.ui.View):
     def is_owner(self, interaction):
         return any(role.id == OWNER_ROLE_ID for role in interaction.user.roles)
 
-    @discord.ui.button(label="Спросить ИИ", style=discord.ButtonStyle.success, custom_id="panel_askai", emoji="💬", row=0)
+    @discord.ui.button(label="💬 Спросить ИИ", style=discord.ButtonStyle.success, custom_id="panel_askai", emoji="💬", row=0)
     async def askai_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(AskAIModal())
+
+    @discord.ui.button(label="🤖 Универсальный ИИ", style=discord.ButtonStyle.primary, custom_id="panel_universal", emoji="🌟", row=0)
+    async def universal_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cur = get_current_model()
+        m = MODELS_INFO.get(cur, {})
+        web_note = " • 🌐 Поиск включён" if cur in WEB_SEARCH_MODELS else ""
+        embed = discord.Embed(
+            title="🌟 Nexus AI — Универсальный режим",
+            description=(
+                f"**Активная модель:** {m.get('label', cur)}{web_note}\n\n"
+                "**💬 Написать** — задай любой вопрос\n"
+                "**🎨 Сгенерировать** — создать изображение по описанию\n"
+                "**🌐 Поиск** — найти актуальную информацию в сети\n"
+                "**📎 Файл/Фото** — как прикрепить файл к запросу"
+            ),
+            color=0x9b59b6,
+        )
+        await interaction.response.send_message(embed=embed, view=UniversalAIView(), ephemeral=True)
 
     @discord.ui.button(label="Set Model", style=discord.ButtonStyle.primary, custom_id="panel_setmodel", emoji="⚙️", row=1)
     async def setmodel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -778,17 +952,18 @@ async def ensure_ai_panel(channel):
     embed = discord.Embed(
         title="🤖 Nexus AI | Panel",
         description=(
-            "**Способы общения с ИИ:**\n"
-            "┣ Кнопка **💬 Спросить ИИ** — ответ только тебе (приватно)\n"
-            "┗ Команда **`?ai <вопрос>`** — ответ в чат через вебхук\n\n"
-            "**`?clear`** — очистить свою историю диалога\n\n"
-            "**Кнопки панели:**\n"
-            "💬 **Спросить ИИ** — задать вопрос приватно\n"
-            "⚙️ **Set Model** — сменить модель *(Owner)*\n"
-            "🤖 **Модели** — все доступные модели *(Owner)*\n"
-            "📊 **Лимиты** — лимиты активной модели *(Owner)*\n"
-            "📨 **Last Msg** — твой последний ответ от ИИ\n"
-            "\n"
+            "**💬 Спросить ИИ** — быстрый приватный вопрос\n"
+            "**🌟 Универсальный ИИ** — полный режим:\n"
+            "┣ 💬 Написать — любой вопрос\n"
+            "┣ 🎨 Сгенерировать картинку\n"
+            "┣ 🌐 Поиск в интернете\n"
+            "┗ 📎 Прикрепить файл или фото\n\n"
+            "**Команды в чате:**\n"
+            "`?ai <вопрос>` + файл/фото — ответ в чат\n"
+            "`?img <описание>` — сгенерировать изображение\n"
+            "`?clear` — очистить историю\n\n"
+            "**Owner:**\n"
+            "⚙️ Set Model · 🤖 Модели · 📊 Лимиты · 📨 Last Msg\n\n"
             "*ИИ помнит историю отдельно для каждого пользователя.*"
         ),
         color=0x00FBFF
@@ -814,17 +989,46 @@ async def on_message(message):
         # ?ai команда — ответ в чат через вебхук
         if content.startswith(('?ai ', '?аи ')):
             prompt = message.content[4:].strip()
-            if not prompt:
+            if not prompt and not message.attachments:
                 try: await message.delete()
                 except: pass
                 return
-            try:
-                await message.delete()
-            except:
-                pass
+
+            # Собираем вложения (фото, файлы, документы)
+            media_parts = []
+            file_texts = []
+            async with aiohttp.ClientSession() as session:
+                for att in message.attachments:
+                    try:
+                        async with session.get(att.url) as resp:
+                            data = await resp.read()
+                        mime = att.content_type or "application/octet-stream"
+                        if mime.startswith("image/"):
+                            media_parts.append({"mime_type": mime, "data": data})
+                        elif mime in ("application/pdf", "text/plain") or att.filename.endswith((".txt", ".pdf", ".py", ".js", ".ts", ".json", ".md", ".csv")):
+                            try:
+                                text = data.decode("utf-8", errors="replace")
+                                file_texts.append(f"[Файл: {att.filename}]\n{text[:3000]}")
+                            except:
+                                pass
+                    except:
+                        pass
+
+            full_prompt = prompt
+            if file_texts:
+                full_prompt = prompt + "\n\n" + "\n\n".join(file_texts)
+            if not full_prompt.strip():
+                full_prompt = "Опиши что видишь на изображении."
 
             async with message.channel.typing():
-                success, answer_text = await ask_ai(message.author.id, prompt)
+                success, answer_text = await ask_ai(message.author.id, full_prompt, media_parts=media_parts)
+
+                # Удаляем сообщение пользователя ПОСЛЕ получения ответа
+                try:
+                    await message.delete()
+                except:
+                    pass
+
                 if not success:
                     await message.channel.send(
                         f"❌ Ошибка Nexus AI (Модель: `{get_current_model()}`): {answer_text}",
@@ -838,7 +1042,6 @@ async def on_message(message):
                 text_only = re.sub(r"```[\w]*\n[\s\S]*?```", "", answer_text).strip()
                 if code:
                     if len(code) < 300:
-                        # Короткий код — красиво inline
                         ext, _ = get_file_info(lang)
                         inline = f"```{lang or ext}\n{code}\n```"
                         msg = (text_only + "\n" + inline) if text_only else inline
@@ -849,7 +1052,6 @@ async def on_message(message):
                         else:
                             send_to_webhook(full, "Nexus AI", AI_AVATAR_URL)
                     else:
-                        # Длинный код — файлом
                         ext, label = get_file_info(lang)
                         filename = f"{label}.{ext}"
                         if text_only:
@@ -863,6 +1065,32 @@ async def on_message(message):
                             send_to_webhook(full_answer[i:i+1990], "Nexus AI", AI_AVATAR_URL)
                     else:
                         send_to_webhook(full_answer, "Nexus AI", AI_AVATAR_URL)
+            return
+
+        # ?img команда — генерация изображения
+        if content.startswith(('?img ', '?имг ')):
+            img_prompt = message.content[5:].strip()
+            if not img_prompt:
+                try: await message.delete()
+                except: pass
+                return
+            async with message.channel.typing():
+                try:
+                    await message.delete()
+                except:
+                    pass
+                try:
+                    img_bytes = await generate_image(img_prompt)
+                    file = discord.File(fp=io.BytesIO(img_bytes), filename="nexus_ai.png")
+                    send_to_webhook(
+                        f"🎨 **{message.author.mention}** — *{img_prompt[:100]}*",
+                        "Nexus AI", AI_AVATAR_URL
+                    )
+                    await message.channel.send(file=file)
+                except Exception as e:
+                    await message.channel.send(
+                        f"❌ Ошибка генерации изображения: {e}", delete_after=15
+                    )
             return
 
         # ?clear команда
