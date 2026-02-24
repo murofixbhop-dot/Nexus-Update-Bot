@@ -20,6 +20,11 @@ except ImportError:
     genai_new = None
     genai_new_types = None
 from openai import OpenAI  # для Groq (OpenAI-совместимый)
+try:
+    from duckduckgo_search import DDGS as DDGSearch
+    DDGS_AVAILABLE = True
+except ImportError:
+    DDGS_AVAILABLE = False
 from flask import Flask, request, jsonify
 from threading import Thread
 from pymongo import MongoClient
@@ -232,6 +237,59 @@ SYSTEM_PROMPT_WEB = _SYSTEM_BASE + (
     "You have built-in web search — use it for current data, prices, news, events. "
     "Only use real links from search results, never invent them."
 )
+
+# ─── WEB SEARCH (DuckDuckGo, без ключа, бесплатно) ─────────────────────────
+# Ключевые слова для определения что нужен интернет
+_SEARCH_TRIGGERS_RU = [
+    "найди в интернете", "поищи в инете", "загугли", "поискай", "найди онлайн",
+    "что сейчас", "актуальная цена", "последние новости", "свежие новости",
+    "что происходит", "сегодня", "сейчас происходит", "текущий курс",
+    "найди информацию", "посмотри в инете", "загляни в интернет",
+    "найди в сети", "проверь в интернете", "поиск в интернете",
+]
+_SEARCH_TRIGGERS_EN = [
+    "search the web", "search online", "look it up", "google it",
+    "find online", "current price", "latest news", "recent news",
+    "what's happening", "search for", "find info about", "check online",
+    "look up online",
+]
+
+def needs_web_search(prompt: str) -> bool:
+    """Определить нужен ли веб-поиск по тексту промпта."""
+    p = prompt.lower()
+    return any(t in p for t in _SEARCH_TRIGGERS_RU + _SEARCH_TRIGGERS_EN)
+
+def extract_search_query(prompt: str) -> str:
+    """Извлечь поисковый запрос из промпта — убрать триггерные фразы."""
+    p = prompt
+    for t in _SEARCH_TRIGGERS_RU + _SEARCH_TRIGGERS_EN:
+        p = p.lower().replace(t, "").strip(" ,.")
+    # Возвращаем очищенный запрос или оригинал если ничего не убрали
+    return p.strip() if len(p.strip()) > 3 else prompt.strip()
+
+async def web_search_ddg(query: str, max_results: int = 6) -> str:
+    """Поиск через DuckDuckGo, без ключа, без лимитов."""
+    if not DDGS_AVAILABLE:
+        return "⚠️ duckduckgo-search не установлен. Установи: pip install duckduckgo-search"
+    try:
+        loop = asyncio.get_event_loop()
+        results = await loop.run_in_executor(
+            None,
+            lambda: DDGSearch().text(query, region="ru-ru", safesearch="off", max_results=max_results)
+        )
+        if not results:
+            return f"🔍 По запросу «{query}» ничего не найдено."
+        lines = [f"🔍 **Результаты поиска: {query}**\n"]
+        for i, r in enumerate(results, 1):
+            title = r.get("title", "—")
+            body  = r.get("body", "")[:200]
+            href  = r.get("href", "")
+            lines.append(f"**{i}. {title}**\n{body}\n{href}\n")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"⚠️ Ошибка поиска: {e}"
+
+
 
 # Текущая модель хранится в MongoDB для синхронизации
 def get_current_model():
@@ -786,6 +844,25 @@ async def ask_ai(uid, prompt, channel=None, media_parts=None):
     user_hist = get_user_history(uid)
     media_parts = media_parts or []
 
+    # ── Веб-поиск через DuckDuckGo (если нужен) ──────────────────────────────
+    search_context = ""
+    if needs_web_search(prompt) and DDGS_AVAILABLE:
+        search_q = extract_search_query(prompt)
+        if channel:
+            try:
+                await channel.typing()
+            except Exception:
+                pass
+        search_context = await web_search_ddg(search_q, max_results=6)
+
+    # Если есть результаты поиска — добавляем к промпту
+    augmented_prompt = prompt
+    if search_context:
+        augmented_prompt = (
+            f"{search_context}\n\n"
+            f"---\nИспользуй эти результаты поиска чтобы ответить на вопрос пользователя:\n{prompt}"
+        )
+
     # ── Проверяем персональную модель Owner ──────────────────────────────────
     owner_model = get_owner_model(uid)
 
@@ -795,7 +872,8 @@ async def ask_ai(uid, prompt, channel=None, media_parts=None):
         order = [owner_model] + [m for m in AUTO_FALLBACK_ORDER if m != owner_model]
     elif get_auto_mode():
         cur = get_current_model()
-        if _wants_web_search(prompt) and cur not in WEB_SEARCH_MODELS:
+        if _wants_web_search(prompt) and cur not in WEB_SEARCH_MODELS and not search_context:
+            # Роутим на compound только если DDG поиск не сработал
             order = ["groq/compound"] + [m for m in AUTO_FALLBACK_ORDER if m not in WEB_SEARCH_MODELS]
         elif _needs_uncensored(prompt) and cur not in {"deepseek-r1-distill-llama-70b", "qwen/qwen3-32b", "qwen-qwq-32b"}:
             uncensored_first = ["deepseek-r1-distill-llama-70b", "qwen/qwen3-32b", "qwen-qwq-32b",
@@ -846,7 +924,7 @@ async def ask_ai(uid, prompt, channel=None, media_parts=None):
 
     for model_name in order:
         try:
-            answer_text = await _call_model(model_name, prompt, user_hist, media_parts)
+            answer_text = await _call_model(model_name, augmented_prompt, user_hist, media_parts)
             # Если модель отказала — пробуем следующую
             if _is_refusal(answer_text) and model_name not in WEB_SEARCH_MODELS:
                 last_err = f"{model_name} отказал (цензура): {answer_text[:100]}"
@@ -864,13 +942,14 @@ async def ask_ai(uid, prompt, channel=None, media_parts=None):
             if any(x in err_str for x in ["429", "quota", "rate", "limit", "503", "overloaded", "unavailable", "resource_exhausted", "compound"]):
                 last_err = str(e)
                 continue
-            return False, str(e)
+            return False, str(e), "", False
     else:
-        return False, f"Все модели недоступны. Последняя ошибка: {last_err}", ""
+        return False, f"Все модели недоступны. Последняя ошибка: {last_err}", "", False
 
-    # Сохраняем историю
+    # Сохраняем историю — только чистый ответ без <think> тегов
+    _, clean_answer_for_hist = _parse_ai_response(answer_text)
     user_hist.append({"role": "user",  "parts": [prompt]})
-    user_hist.append({"role": "model", "parts": [answer_text]})
+    user_hist.append({"role": "model", "parts": [clean_answer_for_hist]})
     if len(user_hist) > MAX_HISTORY:
         user_hist = user_hist[-MAX_HISTORY:]
     save_user_history(uid, user_hist)
@@ -880,7 +959,7 @@ async def ask_ai(uid, prompt, channel=None, media_parts=None):
         m_info = MODELS_INFO.get(used_model, {})
         answer_text += f"\n\n*[авто: {m_info.get('label', used_model)}]*"
 
-    return True, answer_text, used_model
+    return True, answer_text, used_model, bool(search_context)
 
 # ─── Хелпер: форматировать и отправить ответ ИИ ───────────────────────────
 def _split_text(text: str, limit: int = 1900) -> list:
@@ -918,19 +997,21 @@ def _parse_ai_response(raw: str) -> tuple[str, str]:
         answer = raw.strip()
     return thinking, answer
 
-def _get_response_badge(thinking: str, model_name: str = "") -> str:
+def _get_response_badge(thinking: str, model_name: str = "", used_ddg: bool = False) -> str:
     """Возвращает значки в зависимости от типа ответа."""
     badges = []
-    if thinking:
-        badges.append("🧠")   # думал
+    if thinking and len(thinking.strip()) > 50:
+        badges.append("🧠")   # реально думал (есть содержательный <think>)
     if model_name in WEB_SEARCH_MODELS:
-        badges.append("🔍")   # искал в интернете
+        badges.append("🔍")   # Groq Compound — встроенный поиск
+    elif used_ddg:
+        badges.append("🔎")   # DDG поиск для обычной модели
     return " ".join(badges)
 
-async def send_ai_reply(interaction, answer_text: str, ephemeral=True, model_name: str = ""):
+async def send_ai_reply(interaction, answer_text: str, ephemeral=True, model_name: str = "", used_ddg: bool = False):
     """Отправить ответ ИИ через followup с поддержкой кода, файлов и thinking."""
     thinking, clean_answer = _parse_ai_response(answer_text)
-    badge = _get_response_badge(thinking, model_name)
+    badge = _get_response_badge(thinking, model_name, used_ddg)
     prefix = f"**Nexus AI{(' ' + badge) if badge else ''}:**\n"
 
     lang, code = extract_code_info(clean_answer)
@@ -979,7 +1060,7 @@ class AskAIModal(discord.ui.Modal, title="Nexus AI — Задать вопрос
                 ephemeral=True
             )
             return
-        success, answer_text, used_model = await ask_ai(uid, self.prompt.value)
+        success, answer_text, used_model, used_ddg = await ask_ai(uid, self.prompt.value)
         if not success:
             await interaction.followup.send(f"❌ Ошибка: {answer_text}", ephemeral=True)
             return
@@ -1031,7 +1112,7 @@ class UniversalAITextModal(discord.ui.Modal, title="Nexus AI — Универс�
                 ephemeral=True
             )
             return
-        success, answer_text = await ask_ai(uid, text)
+        success, answer_text, _um, used_ddg = await ask_ai(uid, text)
         if not success:
             await interaction.followup.send(f"❌ Ошибка: {answer_text}", ephemeral=True)
             return
@@ -1133,7 +1214,7 @@ class WebSearchModal(discord.ui.Modal, title="🌐 Поиск в интерне�
             spend_tokens(uid, TOKEN_COST_AI)
             await send_ai_reply(interaction, answer_text)
         except Exception as e:
-            success, answer_text = await ask_ai(uid, self.query.value)
+            success, answer_text, _um, used_ddg = await ask_ai(uid, self.query.value)
             if not success:
                 await interaction.followup.send(f"❌ Ошибка: {answer_text}", ephemeral=True)
                 return
@@ -1626,7 +1707,7 @@ async def on_message(message):
 
             # Typing пока думает
             async with message.channel.typing():
-                success, answer_text, used_model_chat = await ask_ai(message.author.id, full_prompt, media_parts=media_parts)
+                success, answer_text, used_model_chat, used_ddg_chat = await ask_ai(message.author.id, full_prompt, media_parts=media_parts)
 
             if success:
                 spend_tokens(message.author.id, TOKEN_COST_AI)
@@ -1638,7 +1719,7 @@ async def on_message(message):
                 return
 
             thinking, clean_answer = _parse_ai_response(answer_text)
-            badge = _get_response_badge(thinking, used_model_chat)
+            badge = _get_response_badge(thinking, used_model_chat, used_ddg_chat)
             mention = message.author.mention
             badge_str = (" " + badge) if badge else ""
 
