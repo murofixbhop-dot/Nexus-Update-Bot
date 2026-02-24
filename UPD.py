@@ -631,189 +631,152 @@ async def send_file_to_webhook(file_bytes, filename, caption, username, avatar_u
 GEMMA_MODELS = {"gemma-3-27b-it", "gemma-3-12b-it", "gemma-3-4b-it"}
 
 
+
+
 def _parse_img_prompt(text: str) -> tuple[str, str]:
     """Извлекает стиль из промпта. Пример: 'аниме кот' -> ('аниме', 'кот')"""
-    STYLES = ["реализм", "аниме", "anime", "3d", "pixel", "пиксель", "быстро", "turbo", "kontext", "seedream"]
+    STYLES = ["реализм", "аниме", "anime", "3d", "pixel", "пиксель", "быстро", "turbo", "seedream"]
     parts = text.split(None, 1)
     if parts and parts[0].lower() in STYLES:
         return parts[0].lower(), parts[1] if len(parts) > 1 else text
     return "auto", text
 
+
 async def generate_image(prompt: str, style: str = "auto") -> bytes:
     """
-    Генерация изображений. Провайдеры:
-    1. Pollinations.ai — БЕЗ ключа, БЕЗ регистрации, бесплатно навсегда
-    2. Gemini Imagen — 500 изображений/день бесплатно (GEMINI_API_KEY)
-    3. HuggingFace — fallback (HF_TOKEN)
+    Генерация изображений через gen.pollinations.ai (unified endpoint).
+    POLLINATIONS_KEY (sk_...) снимает rate limit и watermark.
+    Бесплатные модели: flux, turbo, flux-realism, flux-anime, flux-3d, flux-pixel
     """
-    import urllib.parse, time as _time
+    import urllib.parse, time as _time, io as _io
 
-    # ── Маппинг стилей → модели Pollinations ──────────────────────────────
     STYLE_TO_MODEL = {
-        "auto":        "flux",
-        "реализм":     "flux-realism",
-        "аниме":       "flux-anime",
-        "3d":          "flux-3d",
-        "pixel":       "flux-pixel",  # пиксель-арт
-        "кабель":      "flux-cablyai",
-        "быстро":      "turbo",
-        "kontext":     "kontext",     # редактирование по инструкции
-        "seedream":    "seedream",    # ByteDance Seedream
+        "auto": "flux", "реализм": "flux-realism", "аниме": "flux-anime",
+        "anime": "flux-anime", "3d": "flux-3d", "pixel": "flux-pixel",
+        "пиксель": "flux-pixel", "быстро": "turbo", "turbo": "turbo",
     }
+    model = STYLE_TO_MODEL.get(style, "flux")
+    FALLBACK_MODELS = ["flux", "turbo", "flux-realism", "flux-anime", "flux-3d"]
+    all_models = [model] + [m for m in FALLBACK_MODELS if m != model]
 
-    # Список моделей по приоритету (без ключа)
-    POLLINATIONS_MODELS = [
-        STYLE_TO_MODEL.get(style, "flux"),
-        "flux",
-        "flux-realism",
-        "turbo",
-        "seedream",
-        "flux-anime",
-        "flux-3d",
-    ]
-    # Убираем дубликаты, сохраняем порядок
-    seen = set()
-    POLLINATIONS_MODELS = [m for m in POLLINATIONS_MODELS if not (m in seen or seen.add(m))]
-
+    POLLINATIONS_KEY = os.getenv("POLLINATIONS_KEY", "")
     encoded = urllib.parse.quote(prompt)
     seed = int(_time.time()) % 999999
+    headers = {"Authorization": f"Bearer {POLLINATIONS_KEY}"} if POLLINATIONS_KEY else {}
 
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=90)) as session:
-        for model in POLLINATIONS_MODELS:
+        for mdl in all_models:
             url = (
-                f"https://image.pollinations.ai/prompt/{encoded}"
-                f"?model={model}&width=1024&height=1024&nologo=true&enhance=false&seed={seed}"
+                f"https://gen.pollinations.ai/image/{encoded}"
+                f"?model={mdl}&width=1024&height=1024&nologo=true&seed={seed}"
             )
             try:
-                async with session.get(url) as resp:
+                async with session.get(url, headers=headers, allow_redirects=True) as resp:
                     if resp.status == 200:
-                        content_type = resp.headers.get("Content-Type", "")
-                        if "image" in content_type:
-                            data = await resp.read()
-                            if len(data) > 5000:
-                                return data
+                        data = await resp.read()
+                        if len(data) > 5000 and (
+                            data[:3] == b'\xff\xd8\xff' or
+                            data[:8] == b'\x89PNG\r\n\x1a\n' or
+                            (b'<html' not in data[:200].lower() and b'error' not in data[:100].lower())
+                        ):
+                            return data
+                    elif resp.status == 429:
+                        await asyncio.sleep(15)
             except Exception:
                 continue
 
-    # ── 2. Gemini Imagen (500/день бесплатно, нужен GEMINI_API_KEY) ───────
+        # Fallback — старый image.pollinations.ai
+        for mdl in ["flux", "turbo"]:
+            kp = f"&key={POLLINATIONS_KEY}" if POLLINATIONS_KEY else ""
+            url = f"https://image.pollinations.ai/prompt/{encoded}?model={mdl}&width=1024&height=1024&nologo=true&seed={seed}{kp}"
+            try:
+                async with session.get(url, allow_redirects=True) as resp:
+                    if resp.status == 200:
+                        data = await resp.read()
+                        if len(data) > 5000 and b'<html' not in data[:200].lower():
+                            return data
+            except Exception:
+                continue
+
+    # Gemini Imagen fallback (500/день)
     AI_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("AI_KEY", "")
     if AI_KEY:
         try:
-            import google.generativeai as genai_img
-            genai_img.configure(api_key=AI_KEY)
-            img_model = genai_img.ImageGenerationModel("imagen-3.0-generate-002")
-            result = img_model.generate_images(
-                prompt=prompt,
-                number_of_images=1,
-                safety_filter_level="block_only_high",
-                aspect_ratio="1:1",
+            import google.generativeai as _gi
+            _gi.configure(api_key=AI_KEY)
+            result = _gi.ImageGenerationModel("imagen-3.0-generate-002").generate_images(
+                prompt=prompt, number_of_images=1,
+                safety_filter_level="block_only_high", aspect_ratio="1:1",
             )
             if result.images:
-                return result.images[0]._pil_image.tobytes("jpeg", "RGB")
+                buf = _io.BytesIO()
+                result.images[0]._pil_image.save(buf, format="JPEG")
+                return buf.getvalue()
         except Exception:
             pass
-
-    # ── 3. HuggingFace — последний шанс ───────────────────────────────────
-    HF_TOKEN = os.getenv("HF_TOKEN", "")
-    if HF_TOKEN:
-        headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-        payload = {"inputs": prompt, "parameters": {"num_inference_steps": 4, "width": 1024, "height": 1024}}
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as session:
-            for model in ["black-forest-labs/FLUX.1-schnell", "black-forest-labs/FLUX.1-dev"]:
-                url = f"https://router.huggingface.co/hf-inference/models/{model}"
-                try:
-                    async with session.post(url, headers=headers, json=payload) as resp:
-                        if resp.status == 200:
-                            data = await resp.read()
-                            if len(data) > 5000 and not data.strip().startswith(b'{'):
-                                return data
-                        elif resp.status == 503:
-                            await asyncio.sleep(8)
-                            async with session.post(url, headers=headers, json=payload) as r2:
-                                if r2.status == 200:
-                                    data = await r2.read()
-                                    if len(data) > 5000 and not data.strip().startswith(b'{'):
-                                        return data
-                        elif resp.status == 402:
-                            continue
-                except Exception:
-                    continue
 
     raise ValueError("Не удалось сгенерировать изображение. Все провайдеры недоступны.")
 
 
 async def generate_video(prompt: str) -> bytes:
     """
-    Генерация видео. Провайдеры:
-    1. Pollinations.ai (gen.pollinations.ai) — Seedance/Veo, нужен API ключ
-    2. Gemini Veo 2 — 2 видео/мин бесплатно (GEMINI_API_KEY)
-    Ключ Pollinations: enter.pollinations.ai → POLLINATIONS_KEY
+    Генерация видео через gen.pollinations.ai/v1/video.
+    Модель seedance (базовая бесплатная).
+    Нужен POLLINATIONS_KEY (sk_...) — получи на enter.pollinations.ai.
     """
     POLLINATIONS_KEY = os.getenv("POLLINATIONS_KEY", "")
-    AI_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("AI_KEY", "")
+    if not POLLINATIONS_KEY:
+        raise ValueError(
+            "Для генерации видео добавь `POLLINATIONS_KEY` в Render env vars.\n"
+            "Получи бесплатно: enter.pollinations.ai → Login → Create Secret Key (sk_...)"
+        )
 
-    # ── 1. Pollinations video (Seedance 2.0 / Veo) ───────────────────────
-    if POLLINATIONS_KEY:
-        try:
-            headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {POLLINATIONS_KEY}",
-            }
-            payload = {
-                "model": "seedance",
-                "prompt": prompt,
-                "duration": 5,
-                "resolution": "720p",
-                "aspect_ratio": "16:9",
-            }
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=180)) as session:
-                async with session.post("https://gen.pollinations.ai/v1/video", headers=headers, json=payload) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        video_url = data.get("url") or data.get("video_url")
-                        if video_url:
-                            async with session.get(video_url) as vresp:
-                                if vresp.status == 200:
-                                    return await vresp.read()
-        except Exception:
-            pass
+    headers = {"Authorization": f"Bearer {POLLINATIONS_KEY}", "Content-Type": "application/json"}
+    payload = {"model": "seedance", "prompt": prompt, "duration": 5, "aspectRatio": "16:9"}
 
-    # ── 2. Gemini Veo 2 (2 видео/мин, ~FREE с Gemini API key) ───────────
-    if AI_KEY:
-        try:
-            from google import genai as genai_video
-            from google.genai import types as genai_types
-            client = genai_video.Client(api_key=AI_KEY)
-            operation = client.models.generate_video(
-                model="veo-2.0-generate-001",
-                prompt=prompt,
-                config=genai_types.GenerateVideoConfig(
-                    aspect_ratio="16:9",
-                    duration_seconds=5,
-                    number_of_videos=1,
-                ),
-            )
-            # Polling до готовности (max 3 мин)
-            import time as _t
-            for _ in range(36):
-                if operation.done:
-                    break
-                await asyncio.sleep(5)
-                operation = client.operations.get(operation)
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=300)) as session:
+        async with session.post("https://gen.pollinations.ai/v1/video", headers=headers, json=payload) as resp:
+            text = await resp.text()
+            if resp.status not in (200, 201, 202):
+                raise ValueError(f"Ошибка {resp.status}: {text[:300]}")
+            try:
+                data = json.loads(text)
+            except Exception:
+                raise ValueError(f"Неожиданный ответ: {text[:200]}")
 
-            if operation.done and operation.response and operation.response.generated_videos:
-                video = operation.response.generated_videos[0]
-                video_bytes = client.files.download(file=video.video)
-                return video_bytes
-        except Exception:
-            pass
+            # Случай 1: сразу URL
+            video_url = data.get("url") or data.get("video_url") or data.get("output")
+            if video_url and str(video_url).startswith("http"):
+                async with session.get(video_url) as vr:
+                    if vr.status == 200:
+                        return await vr.read()
 
-    raise ValueError(
-        "Генерация видео недоступна.\n"
-        "Для включения добавь ключ:\n"
-        "• `POLLINATIONS_KEY` — бесплатно на **enter.pollinations.ai** (Seedance 2.0)\n"
-        "• или используй уже настроенный `GEMINI_API_KEY` (Veo 2, 2 видео/мин)"
-    )
+            # Случай 2: polling по task_id
+            task_id = data.get("id") or data.get("task_id") or data.get("jobId")
+            if task_id:
+                for _ in range(60):
+                    await asyncio.sleep(5)
+                    for ep in [
+                        f"https://gen.pollinations.ai/v1/video/{task_id}",
+                        f"https://gen.pollinations.ai/v1/jobs/{task_id}",
+                    ]:
+                        try:
+                            async with session.get(ep, headers=headers) as sr:
+                                if sr.status == 200:
+                                    sdata = await sr.json()
+                                    vurl = sdata.get("url") or sdata.get("video_url") or sdata.get("output")
+                                    if vurl and str(vurl).startswith("http"):
+                                        async with session.get(vurl) as vr:
+                                            if vr.status == 200:
+                                                return await vr.read()
+                                    if sdata.get("status") in ("failed", "error", "cancelled"):
+                                        raise ValueError(f"Генерация провалилась: {sdata.get('error', '')}")
+                        except ValueError:
+                            raise
+                        except Exception:
+                            continue
+
+            raise ValueError(f"Видео не получено. Ответ сервера: {data}")
 
 
 async def _call_model(model_name: str, prompt: str, history: list, media_parts: list = None) -> str:
