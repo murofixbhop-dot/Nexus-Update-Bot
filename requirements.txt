@@ -6,3 +6,4 @@ pymongo
 openai
 aiohttp
 google-genai
+duckduckgo-search
