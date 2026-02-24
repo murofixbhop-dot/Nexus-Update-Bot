@@ -1189,7 +1189,7 @@ class AIPanelView(discord.ui.View):
             ),
             color=0x2ecc71
         )
-        await interaction.response.send_message(embed=embed, view=ModelSelectView(), ephemeral=True)
+        await interaction.response.send_message(embed=embed, view=ModelSelectView(is_owner=True), ephemeral=True)
 
     @discord.ui.button(label="Models", style=discord.ButtonStyle.secondary, custom_id="panel_model", emoji="🤖", row=1)
     async def model_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1243,10 +1243,6 @@ class AIPanelView(discord.ui.View):
         else:
             embed.description = f"• Model: **{get_current_model()}**\n• Status: 🟢 Online"
         await interaction.response.send_message(embed=embed, ephemeral=True)
-
-
-
-
 # --- МЕНЮ МОДЕЛЕЙ ---
 class ModelSelectGoogle(discord.ui.Select):
     def __init__(self):
@@ -1332,7 +1328,7 @@ class AutoToggleButton(discord.ui.Button):
             color=0x2ecc71 if new_state else 0xe74c3c
         )
         # Обновляем кнопку без закрытия меню
-        new_view = ModelSelectView()
+        new_view = ModelSelectView(is_owner=any(role.id == OWNER_ROLE_ID for role in interaction.user.roles))
         await interaction.response.edit_message(view=new_view)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -1368,11 +1364,12 @@ class ModelSelectHF(discord.ui.Select):
 
 
 class ModelSelectView(discord.ui.View):
-    def __init__(self):
+    def __init__(self, is_owner: bool = False):
         super().__init__(timeout=60)
         self.add_item(ModelSelectGoogle())
         self.add_item(ModelSelectGroq())
-        self.add_item(ModelSelectHF())
+        if is_owner:
+            self.add_item(ModelSelectHF())  # HF модели только для Owner
         self.add_item(AutoToggleButton())
 
 # --- КНОПКИ ИСТОРИИ И РОЛЕЙ ---
