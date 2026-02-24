@@ -240,35 +240,36 @@ SYSTEM_PROMPT_WEB = _SYSTEM_BASE + (
     "Only use real links from search results, never invent them."
 )
 
-# ─── WEB SEARCH (DuckDuckGo, без ключа, бесплатно) ─────────────────────────
-_SEARCH_TRIGGERS_RU = [
-    "найди в интернете", "поищи в инете", "поищи в интернете", "загугли",
-    "поискай", "найди онлайн", "актуальная цена", "последние новости",
-    "свежие новости", "текущий курс", "найди информацию",
-    "посмотри в инете", "загляни в интернет", "найди в сети",
-    "проверь в интернете", "поиск в интернете", "погугли",
-    "актуальный курс", "цена сейчас", "стоимость сейчас",
+# ─── WEB SEARCH ─────────────────────────────────────────────────────────────
+_SEARCH_TRIGGERS = [
+    "найди в интернете", "поищи в интернете", "загугли", "погугли", "нагугли",
+    "поискай", "найди онлайн", "посмотри в инете", "загляни в интернет",
+    "найди в сети", "проверь в интернете", "поиск в интернете",
+    "актуальная цена", "актуальный курс", "последние новости", "свежие новости",
+    "текущий курс", "курс валют", "цена сейчас", "стоимость сейчас",
     "что сейчас", "сейчас стоит", "поищи инфу", "поищи информацию",
-    "найди инфу", "нагугли", "погугли", "что происходит сейчас",
-    "какой сейчас", "сколько стоит сейчас", "актуально",
-    "в реальном времени", "онлайн курс", "курс валют",
-]
-_SEARCH_TRIGGERS_EN = [
+    "найди инфу", "найди информацию", "онлайн курс",
     "search the web", "search online", "look it up", "google it",
     "find online", "current price", "latest news", "recent news",
-    "search for", "find info about", "check online", "look up online",
+    "search for", "find info", "check online", "look up",
 ]
-_ALL_TRIGGERS = _SEARCH_TRIGGERS_RU + _SEARCH_TRIGGERS_EN
+# Слова-маркеры поиска и интернета — срабатывают в любом порядке
+_SEARCH_WORDS = ["поищи", "найди", "загугли", "погугли", "нагугли", "поискай", "search", "find", "google"]
+_INET_WORDS   = ["инете", "интернете", "онлайн", "online", "сети", "google", "гугл", "web", "internet"]
 
 def needs_web_search(prompt: str) -> bool:
     p = prompt.lower()
-    return any(t in p for t in _ALL_TRIGGERS)
+    # Точные фразы
+    if any(t in p for t in _SEARCH_TRIGGERS):
+        return True
+    # "поищи ... в инете" — слово поиска + слово интернета в любом месте фразы
+    return any(w in p for w in _SEARCH_WORDS) and any(w in p for w in _INET_WORDS)
 
 def extract_search_query(prompt: str) -> str:
     """Убирает триггерные фразы, сохраняя оригинальный регистр остатка."""
     p_lower = prompt.lower()
     result = prompt  # работаем с оригиналом
-    for t in sorted(_ALL_TRIGGERS, key=len, reverse=True):  # длинные первыми
+    for t in sorted(_SEARCH_TRIGGERS, key=len, reverse=True):  # длинные первыми
         idx = p_lower.find(t)
         if idx != -1:
             result = (result[:idx] + result[idx+len(t):]).strip(" ,.:;")
@@ -282,8 +283,10 @@ def _format_search_results(query: str, results: list) -> str:
         title   = r.get("title", "")
         content = r.get("content", r.get("body", r.get("snippet", "")))[:300]
         url     = r.get("url", r.get("href", r.get("link", "")))
+        # Оборачиваем URL в <> чтобы Discord не делал превью
+        url_fmt = f"<{url}>" if url else ""
         if title or content:
-            lines.append(f"• {title}\n  {content}\n  {url}\n")
+            lines.append(f"• {title}\n  {content}\n  {url_fmt}\n")
     return "\n".join(lines)
 
 async def web_search(query: str, max_results: int = 6) -> str:
@@ -1069,13 +1072,18 @@ def _parse_ai_response(raw: str) -> tuple[str, str]:
 
 def _get_response_badge(thinking: str, model_name: str = "", used_ddg: bool = False) -> str:
     """Возвращает значки в зависимости от типа ответа."""
+    # Модели которые реально "думают" (reasoning) — у них <think> ожидаем
+    REASONING_MODELS = {
+        "deepseek-r1-distill-llama-70b", "qwen-qwq-32b", "qwen/qwen3-32b",
+        "hf/deepseek-r1", "cerebras/qwen-3-235b",
+    }
     badges = []
-    if thinking and len(thinking.strip()) > 50:
-        badges.append("🧠")   # реально думал (есть содержательный <think>)
+    if thinking and len(thinking.strip()) > 50 and model_name in REASONING_MODELS:
+        badges.append("🧠")
     if model_name in WEB_SEARCH_MODELS:
         badges.append("🔍")   # Groq Compound — встроенный поиск
     elif used_ddg:
-        badges.append("🔎")   # DDG поиск для обычной модели
+        badges.append("🔎")   # Tavily/DDG поиск
     return " ".join(badges)
 
 async def send_ai_reply(interaction, answer_text: str, ephemeral=True, model_name: str = "", used_ddg: bool = False):
