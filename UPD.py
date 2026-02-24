@@ -630,79 +630,189 @@ async def send_file_to_webhook(file_bytes, filename, caption, username, avatar_u
 # --- ФУНКЦИЯ ЗАПРОСА К ИИ ---
 GEMMA_MODELS = {"gemma-3-27b-it", "gemma-3-12b-it", "gemma-3-4b-it"}
 
-async def generate_image(prompt: str) -> bytes:
-    """Генерация через HuggingFace Inference API (FLUX.1-schnell) — бесплатно."""
-    HF_TOKEN = os.getenv("HF_TOKEN", "")
 
-    headers = {}
-    if HF_TOKEN:
-        headers["Authorization"] = f"Bearer {HF_TOKEN}"
+def _parse_img_prompt(text: str) -> tuple[str, str]:
+    """Извлекает стиль из промпта. Пример: 'аниме кот' -> ('аниме', 'кот')"""
+    STYLES = ["реализм", "аниме", "anime", "3d", "pixel", "пиксель", "быстро", "turbo", "kontext", "seedream"]
+    parts = text.split(None, 1)
+    if parts and parts[0].lower() in STYLES:
+        return parts[0].lower(), parts[1] if len(parts) > 1 else text
+    return "auto", text
 
-    payload = {
-        "inputs": prompt,
-        "parameters": {
-            "num_inference_steps": 4,
-            "width": 1024,
-            "height": 1024,
-        }
+async def generate_image(prompt: str, style: str = "auto") -> bytes:
+    """
+    Генерация изображений. Провайдеры:
+    1. Pollinations.ai — БЕЗ ключа, БЕЗ регистрации, бесплатно навсегда
+    2. Gemini Imagen — 500 изображений/день бесплатно (GEMINI_API_KEY)
+    3. HuggingFace — fallback (HF_TOKEN)
+    """
+    import urllib.parse, time as _time
+
+    # ── Маппинг стилей → модели Pollinations ──────────────────────────────
+    STYLE_TO_MODEL = {
+        "auto":        "flux",
+        "реализм":     "flux-realism",
+        "аниме":       "flux-anime",
+        "3d":          "flux-3d",
+        "pixel":       "flux-pixel",  # пиксель-арт
+        "кабель":      "flux-cablyai",
+        "быстро":      "turbo",
+        "kontext":     "kontext",     # редактирование по инструкции
+        "seedream":    "seedream",    # ByteDance Seedream
     }
 
-    # Список моделей — новый endpoint router.huggingface.co
-    MODELS = [
-        "black-forest-labs/FLUX.1-schnell",
-        "black-forest-labs/FLUX.1-dev",
-        "stabilityai/stable-diffusion-xl-base-1.0",
+    # Список моделей по приоритету (без ключа)
+    POLLINATIONS_MODELS = [
+        STYLE_TO_MODEL.get(style, "flux"),
+        "flux",
+        "flux-realism",
+        "turbo",
+        "seedream",
+        "flux-anime",
+        "flux-3d",
     ]
+    # Убираем дубликаты, сохраняем порядок
+    seen = set()
+    POLLINATIONS_MODELS = [m for m in POLLINATIONS_MODELS if not (m in seen or seen.add(m))]
 
-    last_err = None
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as session:
-        for model in MODELS:
-            url = f"https://router.huggingface.co/hf-inference/models/{model}"
+    encoded = urllib.parse.quote(prompt)
+    seed = int(_time.time()) % 999999
+
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=90)) as session:
+        for model in POLLINATIONS_MODELS:
+            url = (
+                f"https://image.pollinations.ai/prompt/{encoded}"
+                f"?model={model}&width=1024&height=1024&nologo=true&enhance=false&seed={seed}"
+            )
             try:
-                async with session.post(url, headers=headers, json=payload) as resp:
+                async with session.get(url) as resp:
                     if resp.status == 200:
-                        data = await resp.read()
-                        # Проверяем что это реально изображение а не JSON ошибка
-                        if len(data) > 5000 and not data.strip().startswith(b'{'):
-                            return data
-                        # Если JSON — читаем ошибку
-                        try:
-                            err_json = json.loads(data)
-                            last_err = ValueError(f"{model}: {err_json.get('error', data[:100])}")
-                        except:
-                            last_err = ValueError(f"{model}: маленький ответ {len(data)}b")
-                    elif resp.status == 503:
-                        # Модель загружается — ждём и пробуем снова
-                        await asyncio.sleep(8)
-                        async with session.post(url, headers=headers, json=payload) as resp2:
-                            if resp2.status == 200:
-                                data = await resp2.read()
-                                if len(data) > 5000 and not data.strip().startswith(b'{'):
-                                    return data
-                        last_err = ValueError(f"{model}: 503 model loading")
-                    else:
-                        text = await resp.text()
-                        last_err = ValueError(f"{model}: HTTP {resp.status} — {text[:150]}")
-            except asyncio.TimeoutError:
-                last_err = ValueError(f"{model}: timeout")
-            except Exception as e:
-                last_err = e
+                        content_type = resp.headers.get("Content-Type", "")
+                        if "image" in content_type:
+                            data = await resp.read()
+                            if len(data) > 5000:
+                                return data
+            except Exception:
+                continue
 
-    raise ValueError(
-        f"Не удалось сгенерировать изображение.\n"
-        f"Ошибка: {last_err}\n"
-        f"Добавь HF_TOKEN в переменные окружения (бесплатно на huggingface.co)"
-        if not HF_TOKEN else
-        f"Не удалось сгенерировать изображение. Ошибка: {last_err}"
-    )
+    # ── 2. Gemini Imagen (500/день бесплатно, нужен GEMINI_API_KEY) ───────
+    AI_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("AI_KEY", "")
+    if AI_KEY:
+        try:
+            import google.generativeai as genai_img
+            genai_img.configure(api_key=AI_KEY)
+            img_model = genai_img.ImageGenerationModel("imagen-3.0-generate-002")
+            result = img_model.generate_images(
+                prompt=prompt,
+                number_of_images=1,
+                safety_filter_level="block_only_high",
+                aspect_ratio="1:1",
+            )
+            if result.images:
+                return result.images[0]._pil_image.tobytes("jpeg", "RGB")
+        except Exception:
+            pass
+
+    # ── 3. HuggingFace — последний шанс ───────────────────────────────────
+    HF_TOKEN = os.getenv("HF_TOKEN", "")
+    if HF_TOKEN:
+        headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+        payload = {"inputs": prompt, "parameters": {"num_inference_steps": 4, "width": 1024, "height": 1024}}
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as session:
+            for model in ["black-forest-labs/FLUX.1-schnell", "black-forest-labs/FLUX.1-dev"]:
+                url = f"https://router.huggingface.co/hf-inference/models/{model}"
+                try:
+                    async with session.post(url, headers=headers, json=payload) as resp:
+                        if resp.status == 200:
+                            data = await resp.read()
+                            if len(data) > 5000 and not data.strip().startswith(b'{'):
+                                return data
+                        elif resp.status == 503:
+                            await asyncio.sleep(8)
+                            async with session.post(url, headers=headers, json=payload) as r2:
+                                if r2.status == 200:
+                                    data = await r2.read()
+                                    if len(data) > 5000 and not data.strip().startswith(b'{'):
+                                        return data
+                        elif resp.status == 402:
+                            continue
+                except Exception:
+                    continue
+
+    raise ValueError("Не удалось сгенерировать изображение. Все провайдеры недоступны.")
 
 
 async def generate_video(prompt: str) -> bytes:
-    """Заглушка — стабильного бесплатного video API не существует."""
+    """
+    Генерация видео. Провайдеры:
+    1. Pollinations.ai (gen.pollinations.ai) — Seedance/Veo, нужен API ключ
+    2. Gemini Veo 2 — 2 видео/мин бесплатно (GEMINI_API_KEY)
+    Ключ Pollinations: enter.pollinations.ai → POLLINATIONS_KEY
+    """
+    POLLINATIONS_KEY = os.getenv("POLLINATIONS_KEY", "")
+    AI_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("AI_KEY", "")
+
+    # ── 1. Pollinations video (Seedance 2.0 / Veo) ───────────────────────
+    if POLLINATIONS_KEY:
+        try:
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {POLLINATIONS_KEY}",
+            }
+            payload = {
+                "model": "seedance",
+                "prompt": prompt,
+                "duration": 5,
+                "resolution": "720p",
+                "aspect_ratio": "16:9",
+            }
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=180)) as session:
+                async with session.post("https://gen.pollinations.ai/v1/video", headers=headers, json=payload) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        video_url = data.get("url") or data.get("video_url")
+                        if video_url:
+                            async with session.get(video_url) as vresp:
+                                if vresp.status == 200:
+                                    return await vresp.read()
+        except Exception:
+            pass
+
+    # ── 2. Gemini Veo 2 (2 видео/мин, ~FREE с Gemini API key) ───────────
+    if AI_KEY:
+        try:
+            from google import genai as genai_video
+            from google.genai import types as genai_types
+            client = genai_video.Client(api_key=AI_KEY)
+            operation = client.models.generate_video(
+                model="veo-2.0-generate-001",
+                prompt=prompt,
+                config=genai_types.GenerateVideoConfig(
+                    aspect_ratio="16:9",
+                    duration_seconds=5,
+                    number_of_videos=1,
+                ),
+            )
+            # Polling до готовности (max 3 мин)
+            import time as _t
+            for _ in range(36):
+                if operation.done:
+                    break
+                await asyncio.sleep(5)
+                operation = client.operations.get(operation)
+
+            if operation.done and operation.response and operation.response.generated_videos:
+                video = operation.response.generated_videos[0]
+                video_bytes = client.files.download(file=video.video)
+                return video_bytes
+        except Exception:
+            pass
+
     raise ValueError(
-        "Генерация видео временно недоступна.\n"
-        "Все бесплатные сервисы (Pollinations video, WAN) нестабильны.\n"
-        "Токены за видео не списаны."
+        "Генерация видео недоступна.\n"
+        "Для включения добавь ключ:\n"
+        "• `POLLINATIONS_KEY` — бесплатно на **enter.pollinations.ai** (Seedance 2.0)\n"
+        "• или используй уже настроенный `GEMINI_API_KEY` (Veo 2, 2 видео/мин)"
     )
 
 
@@ -1011,6 +1121,12 @@ async def ask_ai(uid, prompt, channel=None, media_parts=None):
                 user_hist = user_hist[-(max(2, len(user_hist)//2)):]
                 last_err = f"Запрос слишком большой, сокращаю историю ({str(e)[:80]})"
                 continue
+            # 402 — кончились кредиты HF, пропускаем все HF модели
+            if "402" in err_str or "credit" in err_str or "depleted" in err_str or "balance" in err_str:
+                last_err = f"{model_name}: кончились кредиты ({str(e)[:80]})"
+                # Пропускаем все оставшиеся HF модели
+                order = [m for m in order if m not in HF_CHAT_MODELS]
+                continue
             # Лимит — пробуем следующую модель
             if any(x in err_str for x in ["429", "quota", "rate", "limit", "503", "overloaded", "unavailable", "resource_exhausted", "compound"]):
                 last_err = str(e)
@@ -1172,7 +1288,8 @@ class UniversalAITextModal(discord.ui.Modal, title="Nexus AI — Универс�
                 return
             img_prompt = re.sub(r"^(!img |!имг |сгенерируй |нарисуй )", "", text, flags=re.IGNORECASE).strip()
             try:
-                img_bytes = await generate_image(img_prompt)
+                _img_style, _img_clean = _parse_img_prompt(img_prompt)
+                img_bytes = await generate_image(_img_clean, style=_img_style)
                 spend_tokens(uid, TOKEN_COST_IMG)
                 await interaction.followup.send(
                     content=f"🎨 **-{TOKEN_COST_IMG} tokens** — *{img_prompt[:100]}*",
@@ -1257,7 +1374,8 @@ class ImageGenModal(discord.ui.Modal, title="🎨 Генерация изобр�
             )
             return
         try:
-            img_bytes = await generate_image(self.prompt.value)
+            _img_style, _img_clean = _parse_img_prompt(self.prompt.value)
+            img_bytes = await generate_image(_img_clean, style=_img_style)
             spend_tokens(uid, TOKEN_COST_IMG)
             await interaction.followup.send(
                 content=f"🎨 **-{TOKEN_COST_IMG} tokens** — *{self.prompt.value[:100]}*",
@@ -1857,7 +1975,8 @@ async def on_message(message):
                 pass
             async with message.channel.typing():
                 try:
-                    img_bytes = await generate_image(img_prompt)
+                    _img_style, _img_clean = _parse_img_prompt(img_prompt)
+                    img_bytes = await generate_image(_img_clean, style=_img_style)
                     spend_tokens(message.author.id, TOKEN_COST_IMG)
                     await message.channel.send(
                         f"🎨 {message.author.mention} **-{TOKEN_COST_IMG} tokens** — *{img_prompt[:100]}*",
