@@ -163,6 +163,33 @@ GROQ_MODELS = {
     "groq/compound", "groq/compound-mini",
 }
 
+# --- CEREBRAS CLIENT (бесплатно: 1M токен/день, 30 RPM) ---
+CEREBRAS_KEY = os.getenv('CEREBRAS_KEY')
+cerebras_client = OpenAI(
+    api_key=CEREBRAS_KEY,
+    base_url="https://api.cerebras.ai/v1"
+) if CEREBRAS_KEY else None
+
+CEREBRAS_MODELS = {
+    "cerebras/llama-3.3-70b",    # Llama 3.3 70B — быстрейший (2000+ tok/s)
+    "cerebras/llama-4-scout",    # Llama 4 Scout 17B
+    "cerebras/qwen-3-235b",      # Qwen3 235B A22B
+}
+
+# --- MISTRAL CLIENT (бесплатно: 1B токен/месяц) ---
+MISTRAL_KEY = os.getenv('MISTRAL_KEY')
+mistral_client = OpenAI(
+    api_key=MISTRAL_KEY,
+    base_url="https://api.mistral.ai/v1"
+) if MISTRAL_KEY else None
+
+MISTRAL_MODELS = {
+    "mistral/mistral-small-latest",   # Mistral Small — быстрый, 1B tok/month
+    "mistral/mistral-medium-latest",  # Mistral Medium
+    "mistral/devstral-small",         # Devstral — лучший для кода (бесплатно)
+    "mistral/mistral-nemo",           # Mistral Nemo 12B
+}
+
 # HuggingFace модели через router.huggingface.co (требует HF_TOKEN)
 HF_CHAT_MODELS = {
     # Топ модели через HF router — OpenAI-compatible API
@@ -232,7 +259,11 @@ AUTO_FALLBACK_ORDER = [
     "openai/gpt-oss-120b",              # 4. OpenAI open-weight (Groq)
     "openai/gpt-oss-20b",               # 5. Быстрый GPT-OSS (Groq)
     "moonshotai/kimi-k2-instruct-0905", # 6. Kimi K2 (Groq)
-    "gemini-2.5-flash",                 # 7. Gemini (Gemini API)
+    "cerebras/llama-3.3-70b",           # 7. Cerebras — молниеносный (2000 tok/s)
+    "cerebras/qwen-3-235b",             # 8. Qwen3 235B через Cerebras
+    "mistral/mistral-small-latest",     # 9. Mistral — 1B tok/month бесплатно
+    "mistral/devstral-small",           # 10. Лучший для кода (Mistral)
+    "gemini-2.5-flash",                 # 11. Gemini (Gemini API)
     "gemini-2.5-flash-lite",
     "gemini-2.0-flash",
     "llama-3.3-70b-versatile",
@@ -579,10 +610,48 @@ async def generate_video(prompt: str) -> bytes:
 async def _call_model(model_name: str, prompt: str, history: list, media_parts: list = None) -> str:
     """Вызвать конкретную модель. Возвращает текст или бросает исключение.
     media_parts: список dict {"mime_type": ..., "data": bytes} для вложений."""
-    is_gemma = model_name in GEMMA_MODELS
-    is_groq  = model_name in GROQ_MODELS
-    is_hf    = model_name in HF_CHAT_MODELS
+    is_gemma    = model_name in GEMMA_MODELS
+    is_groq     = model_name in GROQ_MODELS
+    is_hf       = model_name in HF_CHAT_MODELS
+    is_cerebras = model_name in CEREBRAS_MODELS
+    is_mistral  = model_name in MISTRAL_MODELS
     media_parts = media_parts or []
+
+    # ── Cerebras (OpenAI-compatible, бесплатно) ────────────────────────────
+    if is_cerebras:
+        if not cerebras_client:
+            raise ValueError("CEREBRAS_KEY не задан — получи бесплатно на inference.cerebras.ai")
+        real_model = model_name.replace("cerebras/", "")
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        for h in history[-16:]:
+            role = "assistant" if h["role"] == "model" else "user"
+            messages.append({"role": role, "content": h["parts"][0] if h.get("parts") else ""})
+        messages.append({"role": "user", "content": prompt})
+        resp = cerebras_client.chat.completions.create(
+            model=real_model,
+            messages=messages,
+            max_tokens=4096,
+            temperature=0.7,
+        )
+        return resp.choices[0].message.content.strip()
+
+    # ── Mistral (OpenAI-compatible, 1B tok/month бесплатно) ───────────────
+    if is_mistral:
+        if not mistral_client:
+            raise ValueError("MISTRAL_KEY не задан — получи бесплатно на console.mistral.ai")
+        real_model = model_name.replace("mistral/", "")
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        for h in history[-16:]:
+            role = "assistant" if h["role"] == "model" else "user"
+            messages.append({"role": role, "content": h["parts"][0] if h.get("parts") else ""})
+        messages.append({"role": "user", "content": prompt})
+        resp = mistral_client.chat.completions.create(
+            model=real_model,
+            messages=messages,
+            max_tokens=4096,
+            temperature=0.7,
+        )
+        return resp.choices[0].message.content.strip()
 
     # ── HuggingFace router (OpenAI-compatible) ─────────────────────────────
     if is_hf:
@@ -1257,7 +1326,7 @@ class ModelSelectGoogle(discord.ui.Select):
             discord.SelectOption(label="Gemma 3 12B", value="gemma-3-12b-it", emoji="🔬", description="Баланс • 100 req/day"),
             discord.SelectOption(label="Gemma 3 4B", value="gemma-3-4b-it", emoji="📱", description="Лёгкая • 300 req/day"),
         ]
-        super().__init__(placeholder="🌐 Google модели...", min_values=1, max_values=1, options=options, custom_id="select_google")
+        super().__init__(placeholder="🌐 Google модели...", min_values=1, max_values=1, options=options, custom_id="select_google", row=0)
 
     async def callback(self, interaction: discord.Interaction):
         if not any(role.id == OWNER_ROLE_ID for role in interaction.user.roles):
@@ -1268,7 +1337,6 @@ class ModelSelectGoogle(discord.ui.Select):
         web = " 🌐" if get_current_model() in WEB_SEARCH_MODELS else ""
         # edit_message убирает embed+view (меню пропадает), content пустой — ничего не видно
         await interaction.response.edit_message(content=f"✅ **{lbl}{web}**", embed=None, view=None)
-        await interaction.delete_original_response()
 
 class ModelSelectGroq(discord.ui.Select):
     def __init__(self):
@@ -1286,7 +1354,7 @@ class ModelSelectGroq(discord.ui.Select):
             discord.SelectOption(label="Qwen3 32B 🆕", value="qwen/qwen3-32b", emoji="✨", description="Новейший Qwen3 • 400 tok/s"),
             discord.SelectOption(label="Kimi K2 🆕", value="moonshotai/kimi-k2-instruct-0905", emoji="🌙", description="262K контекст"),
         ]
-        super().__init__(placeholder="⚡ Groq модели...", min_values=1, max_values=1, options=options, custom_id="select_groq")
+        super().__init__(placeholder="⚡ Groq модели...", min_values=1, max_values=1, options=options, custom_id="select_groq", row=1)
 
     async def callback(self, interaction: discord.Interaction):
         if not any(role.id == OWNER_ROLE_ID for role in interaction.user.roles):
@@ -1296,7 +1364,6 @@ class ModelSelectGroq(discord.ui.Select):
         lbl = m.get("label", get_current_model())
         web = " 🌐" if get_current_model() in WEB_SEARCH_MODELS else ""
         await interaction.response.edit_message(content=f"✅ **{lbl}{web}** [Groq]", embed=None, view=None)
-        await interaction.delete_original_response()
 
 class AutoToggleButton(discord.ui.Button):
     def __init__(self):
@@ -1305,7 +1372,7 @@ class AutoToggleButton(discord.ui.Button):
             label=f"🔄 Авто: {'ВКЛ ✅' if is_on else 'ВЫКЛ ❌'}",
             style=discord.ButtonStyle.success if is_on else discord.ButtonStyle.danger,
             custom_id="modelview_auto",
-            row=2
+            row=4
         )
 
     async def callback(self, interaction: discord.Interaction):
@@ -1333,6 +1400,32 @@ class AutoToggleButton(discord.ui.Button):
         await interaction.followup.send(embed=embed, ephemeral=True)
 
 
+class ModelSelectExtra(discord.ui.Select):
+    """Cerebras + Mistral — дополнительные бесплатные провайдеры."""
+    def __init__(self):
+        options = [
+            discord.SelectOption(label="⚡ Cerebras Llama 3.3 70B", value="cerebras/llama-3.3-70b", emoji="⚡", description="2000+ tok/s • 1M tok/day бесплатно"),
+            discord.SelectOption(label="🧠 Cerebras Qwen3 235B", value="cerebras/qwen-3-235b", emoji="🧠", description="Мощный • быстрый"),
+            discord.SelectOption(label="🚀 Cerebras Llama 4 Scout", value="cerebras/llama-4-scout", emoji="🚀", description="131K контекст"),
+            discord.SelectOption(label="🌊 Mistral Small", value="mistral/mistral-small-latest", emoji="🌊", description="1B tok/month бесплатно"),
+            discord.SelectOption(label="💻 Mistral Devstral (код)", value="mistral/devstral-small", emoji="💻", description="Лучший coding • бесплатно"),
+            discord.SelectOption(label="🔵 Mistral Nemo 12B", value="mistral/mistral-nemo", emoji="🔵", description="Лёгкий, быстрый"),
+        ]
+        super().__init__(placeholder="🆓 Cerebras / Mistral (бесплатно)...", min_values=1, max_values=1, options=options, custom_id="select_extra", row=2)
+
+    async def callback(self, interaction: discord.Interaction):
+        if not any(role.id == OWNER_ROLE_ID for role in interaction.user.roles):
+            return await interaction.response.send_message("❌ Нет прав.", ephemeral=True)
+        set_current_model(self.values[0])
+        val = self.values[0]
+        if val.startswith("cerebras/"):
+            provider = "Cerebras ⚡" if cerebras_client else "❌ CEREBRAS_KEY не задан!"
+        else:
+            provider = "Mistral 🌊" if mistral_client else "❌ MISTRAL_KEY не задан!"
+        lbl = val.split("/")[-1]
+        await interaction.response.edit_message(content=f"✅ **{lbl}** [{provider}]", embed=None, view=None)
+
+
 class ModelSelectHF(discord.ui.Select):
     """HuggingFace эксклюзивные модели для Ownerа."""
     def __init__(self):
@@ -1345,7 +1438,7 @@ class ModelSelectHF(discord.ui.Select):
             discord.SelectOption(label="💨 Mistral Small 3.1 (HF)", value="hf/mistral-small-3.1", emoji="💨", description="Быстрый, эффективный"),
             discord.SelectOption(label="🔄 Сбросить на Auto", value="__reset__", emoji="🔄", description="Вернуться к глобальной модели"),
         ]
-        super().__init__(placeholder="🎯 Моя модель (Owner HF)...", min_values=1, max_values=1, options=options, custom_id="select_hf_owner", row=2)
+        super().__init__(placeholder="🎯 Моя модель (Owner HF)...", min_values=1, max_values=1, options=options, custom_id="select_hf_owner", row=3)
 
     async def callback(self, interaction: discord.Interaction):
         if not any(role.id == OWNER_ROLE_ID for role in interaction.user.roles):
@@ -1360,17 +1453,17 @@ class ModelSelectHF(discord.ui.Select):
             label = OWNER_EXCLUSIVE_MODELS.get(val, {}).get("label", val)
             hf_ok = "✅" if os.getenv("HF_TOKEN") else "⚠️ HF_TOKEN not set!"
             await interaction.response.edit_message(content=f"✅ **Your model: {label}** {hf_ok}", embed=None, view=None)
-        await interaction.delete_original_response()
 
 
 class ModelSelectView(discord.ui.View):
     def __init__(self, is_owner: bool = False):
         super().__init__(timeout=60)
-        self.add_item(ModelSelectGoogle())
-        self.add_item(ModelSelectGroq())
+        self.add_item(ModelSelectGoogle())    # row=0
+        self.add_item(ModelSelectGroq())      # row=1
+        self.add_item(ModelSelectExtra())     # row=2 — Cerebras + Mistral
         if is_owner:
-            self.add_item(ModelSelectHF())  # HF модели только для Owner
-        self.add_item(AutoToggleButton())
+            self.add_item(ModelSelectHF())    # row=3 — HF только для Owner
+        self.add_item(AutoToggleButton())     # row=4
 
 # --- КНОПКИ ИСТОРИИ И РОЛЕЙ ---
 class HistoryView(View):
