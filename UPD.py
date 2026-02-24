@@ -25,6 +25,8 @@ try:
     DDGS_AVAILABLE = True
 except ImportError:
     DDGS_AVAILABLE = False
+
+TAVILY_KEY = os.getenv("TAVILY_KEY", "")
 from flask import Flask, request, jsonify
 from threading import Thread
 from pymongo import MongoClient
@@ -239,55 +241,91 @@ SYSTEM_PROMPT_WEB = _SYSTEM_BASE + (
 )
 
 # ─── WEB SEARCH (DuckDuckGo, без ключа, бесплатно) ─────────────────────────
-# Ключевые слова для определения что нужен интернет
 _SEARCH_TRIGGERS_RU = [
-    "найди в интернете", "поищи в инете", "загугли", "поискай", "найди онлайн",
-    "что сейчас", "актуальная цена", "последние новости", "свежие новости",
-    "что происходит", "сегодня", "сейчас происходит", "текущий курс",
-    "найди информацию", "посмотри в инете", "загляни в интернет",
-    "найди в сети", "проверь в интернете", "поиск в интернете",
+    "найди в интернете", "поищи в инете", "поищи в интернете", "загугли",
+    "поискай", "найди онлайн", "актуальная цена", "последние новости",
+    "свежие новости", "текущий курс", "найди информацию",
+    "посмотри в инете", "загляни в интернет", "найди в сети",
+    "проверь в интернете", "поиск в интернете", "погугли",
+    "актуальный курс", "цена сейчас", "стоимость сейчас",
+    "что сейчас", "сейчас стоит", "поищи инфу", "поищи информацию",
+    "найди инфу", "нагугли", "погугли", "что происходит сейчас",
+    "какой сейчас", "сколько стоит сейчас", "актуально",
+    "в реальном времени", "онлайн курс", "курс валют",
 ]
 _SEARCH_TRIGGERS_EN = [
     "search the web", "search online", "look it up", "google it",
     "find online", "current price", "latest news", "recent news",
-    "what's happening", "search for", "find info about", "check online",
-    "look up online",
+    "search for", "find info about", "check online", "look up online",
 ]
+_ALL_TRIGGERS = _SEARCH_TRIGGERS_RU + _SEARCH_TRIGGERS_EN
 
 def needs_web_search(prompt: str) -> bool:
-    """Определить нужен ли веб-поиск по тексту промпта."""
     p = prompt.lower()
-    return any(t in p for t in _SEARCH_TRIGGERS_RU + _SEARCH_TRIGGERS_EN)
+    return any(t in p for t in _ALL_TRIGGERS)
 
 def extract_search_query(prompt: str) -> str:
-    """Извлечь поисковый запрос из промпта — убрать триггерные фразы."""
-    p = prompt
-    for t in _SEARCH_TRIGGERS_RU + _SEARCH_TRIGGERS_EN:
-        p = p.lower().replace(t, "").strip(" ,.")
-    # Возвращаем очищенный запрос или оригинал если ничего не убрали
-    return p.strip() if len(p.strip()) > 3 else prompt.strip()
+    """Убирает триггерные фразы, сохраняя оригинальный регистр остатка."""
+    p_lower = prompt.lower()
+    result = prompt  # работаем с оригиналом
+    for t in sorted(_ALL_TRIGGERS, key=len, reverse=True):  # длинные первыми
+        idx = p_lower.find(t)
+        if idx != -1:
+            result = (result[:idx] + result[idx+len(t):]).strip(" ,.:;")
+            p_lower = result.lower()
+    return result.strip() if len(result.strip()) > 2 else prompt.strip()
 
-async def web_search_ddg(query: str, max_results: int = 6) -> str:
-    """Поиск через DuckDuckGo, без ключа, без лимитов."""
-    if not DDGS_AVAILABLE:
-        return "⚠️ duckduckgo-search не установлен. Установи: pip install duckduckgo-search"
-    try:
-        loop = asyncio.get_event_loop()
-        results = await loop.run_in_executor(
-            None,
-            lambda: DDGSearch().text(query, region="ru-ru", safesearch="off", max_results=max_results)
-        )
-        if not results:
-            return f"🔍 По запросу «{query}» ничего не найдено."
-        lines = [f"🔍 **Результаты поиска: {query}**\n"]
-        for i, r in enumerate(results, 1):
-            title = r.get("title", "—")
-            body  = r.get("body", "")[:200]
-            href  = r.get("href", "")
-            lines.append(f"**{i}. {title}**\n{body}\n{href}\n")
-        return "\n".join(lines)
-    except Exception as e:
-        return f"⚠️ Ошибка поиска: {e}"
+def _format_search_results(query: str, results: list) -> str:
+    """Форматирует список результатов поиска в текст для промпта."""
+    lines = [f"Актуальные данные из интернета по запросу \"{query}\":\n"]
+    for r in results:
+        title   = r.get("title", "")
+        content = r.get("content", r.get("body", r.get("snippet", "")))[:300]
+        url     = r.get("url", r.get("href", r.get("link", "")))
+        if title or content:
+            lines.append(f"• {title}\n  {content}\n  {url}\n")
+    return "\n".join(lines)
+
+async def web_search(query: str, max_results: int = 6) -> str:
+    """
+    Поиск в интернете. Провайдеры по приоритету:
+    1. Tavily — специально для AI, 1000 req/month бесплатно (TAVILY_KEY)
+    2. DDG    — без ключа, fallback
+    """
+    loop = asyncio.get_event_loop()
+
+    # ── 1. Tavily (лучший для AI, работает с любых серверов) ──────────────
+    if TAVILY_KEY:
+        try:
+            resp = await loop.run_in_executor(None, lambda: requests.post(
+                "https://api.tavily.com/search",
+                json={"api_key": TAVILY_KEY, "query": query, "max_results": max_results,
+                      "search_depth": "basic", "include_answer": False},
+                timeout=10
+            ))
+            data = resp.json()
+            results = data.get("results", [])
+            if results:
+                return _format_search_results(query, [
+                    {"title": r["title"], "content": r.get("content", "")[:300], "url": r["url"]}
+                    for r in results
+                ])
+        except Exception:
+            pass
+
+    # ── 2. DuckDuckGo (без ключа, fallback) ─────────────────────────────
+    if DDGS_AVAILABLE:
+        try:
+            results = await loop.run_in_executor(
+                None,
+                lambda: DDGSearch().text(query, region="wt-wt", safesearch="off", max_results=max_results)
+            )
+            if results:
+                return _format_search_results(query, results)
+        except Exception:
+            pass
+
+    return ""  # все провайдеры не сработали
 
 
 
@@ -839,28 +877,60 @@ def _wants_web_search(prompt: str) -> bool:
     return any(kw in p for kw in _WEB_KEYWORDS)
 
 
+async def _extract_search_query_ai(prompt: str) -> str:
+    """Использует быструю модель чтобы извлечь поисковый запрос из сообщения пользователя."""
+    try:
+        # Используем самую быструю доступную модель
+        if groq_client:
+            resp = groq_client.chat.completions.create(
+                model="llama-3.1-8b-instant",
+                messages=[
+                    {"role": "system", "content":
+                        "Ты помощник для извлечения поисковых запросов. "
+                        "Из сообщения пользователя извлеки ТОЛЬКО поисковый запрос — "
+                        "короткую фразу для поиска в Google (2-6 слов). "
+                        "Отвечай ТОЛЬКО поисковым запросом, без пояснений, без кавычек."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=30,
+                temperature=0.1,
+            )
+            q = resp.choices[0].message.content.strip().strip('"\'')
+            return q if q else extract_search_query(prompt)
+    except Exception:
+        pass
+    return extract_search_query(prompt)  # fallback на простой парсинг
+
+
 async def ask_ai(uid, prompt, channel=None, media_parts=None):
     """Запрос к ИИ. Owner может иметь персональную модель."""
     user_hist = get_user_history(uid)
     media_parts = media_parts or []
 
-    # ── Веб-поиск через DuckDuckGo (если нужен) ──────────────────────────────
+    # ── Веб-поиск (двухмодельная система) ────────────────────────────────────
+    # Шаг 1: быстрая модель извлекает запрос → поиск → основная модель отвечает
     search_context = ""
-    if needs_web_search(prompt) and DDGS_AVAILABLE:
-        search_q = extract_search_query(prompt)
+    if needs_web_search(prompt):
+        # Быстрая модель формулирует поисковый запрос
+        search_q = await _extract_search_query_ai(prompt)
         if channel:
             try:
                 await channel.typing()
             except Exception:
                 pass
-        search_context = await web_search_ddg(search_q, max_results=6)
+        # Поиск
+        search_context = await web_search(search_q, max_results=6)
 
-    # Если есть результаты поиска — добавляем к промпту
+    # Если есть результаты — добавляем к промпту для основной модели
     augmented_prompt = prompt
     if search_context:
         augmented_prompt = (
-            f"{search_context}\n\n"
-            f"---\nИспользуй эти результаты поиска чтобы ответить на вопрос пользователя:\n{prompt}"
+            f"[СИСТЕМНАЯ ИНФОРМАЦИЯ: Тебе предоставлены актуальные данные из интернета. "
+            f"Используй их для ответа. НЕ говори что у тебя нет доступа к интернету.]\n\n"
+            f"{search_context}\n"
+            f"---\n"
+            f"Вопрос пользователя: {prompt}\n\n"
+            f"Ответь на основе данных выше. Укажи источники если уместно."
         )
 
     # ── Проверяем персональную модель Owner ──────────────────────────────────
