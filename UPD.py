@@ -162,7 +162,7 @@ GROQ_MODELS = {
     # Preview
     "meta-llama/llama-4-maverick-17b-128e-instruct",
     "meta-llama/llama-4-scout-17b-16e-instruct",
-    "deepseek-r1-distill-llama-70b",
+    "qwen/qwen3-32b",
     "qwen-qwq-32b",
     "qwen/qwen3-32b",
     "moonshotai/kimi-k2-instruct-0905",
@@ -241,40 +241,136 @@ SYSTEM_PROMPT_WEB = _SYSTEM_BASE + (
 )
 
 # ─── WEB SEARCH ─────────────────────────────────────────────────────────────
-_SEARCH_TRIGGERS = [
-    "найди в интернете", "поищи в интернете", "загугли", "погугли", "нагугли",
-    "поискай", "найди онлайн", "посмотри в инете", "загляни в интернет",
-    "найди в сети", "проверь в интернете", "поиск в интернете",
-    "актуальная цена", "актуальный курс", "последние новости", "свежие новости",
-    "текущий курс", "курс валют", "цена сейчас", "стоимость сейчас",
-    "что сейчас", "сейчас стоит", "поищи инфу", "поищи информацию",
-    "найди инфу", "найди информацию", "онлайн курс",
-    "search the web", "search online", "look it up", "google it",
-    "find online", "current price", "latest news", "recent news",
-    "search for", "find info", "check online", "look up",
+# ── Слова-действия (поиск/проверка) ─────────────────────────────────────────
+_ACTION_WORDS = [
+    # найти
+    "найди", "найти", "найдёт", "найдет",
+    # поискать
+    "поищи", "поищи-ка", "поиск", "поискай", "поискать",
+    # посмотреть
+    "посмотри", "посмотреть", "глянь", "глянуть", "глянь-ка",
+    # проверить
+    "проверь", "проверить", "провери",
+    # загуглить
+    "загугли", "погугли", "нагугли", "загуглить", "гугли",
+    # чекнуть / чекать
+    "чекни", "чекнуть", "чекни-ка", "чек", "чекать", "чекни",
+    # поглядеть
+    "погляди", "поглядеть", "поглянь",
+    # узнать
+    "узнай", "узнать", "разузнай",
+    # скажи (актуальное)
+    "скажи", "скажи-ка",
+    # английские
+    "find", "search", "look", "check", "google", "lookup",
+    "show me", "tell me",
 ]
-# Слова-маркеры поиска и интернета — срабатывают в любом порядке
-_SEARCH_WORDS = ["поищи", "найди", "загугли", "погугли", "нагугли", "поискай", "search", "find", "google"]
-_INET_WORDS   = ["инете", "интернете", "онлайн", "online", "сети", "google", "гугл", "web", "internet"]
+
+# ── Слова интернета ──────────────────────────────────────────────────────────
+_INET_WORDS = [
+    # интернет и сокращения
+    "интернете", "интернет", "инете", "инет", "инэте", "инэт",
+    # сеть
+    "сети", "сеть",
+    # онлайн
+    "онлайн", "online",
+    # веб
+    "веб", "web",
+    # гугл
+    "гугл", "гугле", "гугла", "google",
+]
+
+# ── Триггеры без глагола (сами по себе означают нужен поиск) ─────────────────
+_STANDALONE_TRIGGERS = [
+    # курсы валют
+    "курс доллара", "курс долара", "курс евро", "курс рубля", "курс юаня",
+    "курс биткоина", "курс btc", "курс usd", "курс eur", "курс бтс",
+    "курс валют", "текущий курс", "актуальный курс", "онлайн курс",
+    "доллар сегодня", "евро сегодня", "доллар к рублю", "евро к рублю",
+    "usd/rub", "eur/rub", "usd rub", "eur rub",
+    # цены крипты
+    "цена биткоина", "цена ethereum", "цена eth", "цена btc",
+    "цена доллара", "цена евро",
+    # новости
+    "последние новости", "свежие новости", "новости сегодня",
+    "последние события", "что случилось",
+    # актуальное
+    "актуальная цена", "цена сейчас", "стоимость сейчас",
+    "что сейчас происходит", "сейчас стоит",
+    # погода
+    "погода сегодня", "погода завтра", "температура сейчас",
+    # английские
+    "latest news", "recent news", "current price", "what's happening",
+    "search for", "find info", "look it up", "google it", "check online",
+    "search online", "search the web", "find online",
+]
 
 def needs_web_search(prompt: str) -> bool:
     p = prompt.lower()
-    # Точные фразы
-    if any(t in p for t in _SEARCH_TRIGGERS):
+    # 1. Проверяем standalone-триггеры (курс доллара, последние новости и т.п.)
+    if any(t in p for t in _STANDALONE_TRIGGERS):
         return True
-    # "поищи ... в инете" — слово поиска + слово интернета в любом месте фразы
-    return any(w in p for w in _SEARCH_WORDS) and any(w in p for w in _INET_WORDS)
+    # 2. Комбо: любое слово-действие + любое слово интернета (в любом порядке, в любом месте)
+    has_action = any(w in p for w in _ACTION_WORDS)
+    has_inet   = any(w in p for w in _INET_WORDS)
+    return has_action and has_inet
+
+def extract_backtick_context(prompt: str) -> str:
+    """Извлекает текст из `одинарных` и ```тройных``` бэктиков для контекста поиска."""
+    import re
+    # Тройные бэктики (блоки кода)
+    triple = re.findall(r'''```[\w]*\n?([\s\S]*?)```''', prompt)
+    # Одинарные бэктики (inline)
+    single = re.findall(r'`([^`]+)`', prompt)
+    parts = [x.strip() for x in triple + single if x.strip()]
+    return " ".join(parts)
+
+def needs_web_search_enhanced(prompt: str) -> tuple[bool, str]:
+    """
+    Расширенная проверка — возвращает (нужен_поиск, поисковый_запрос).
+    Логика:
+    1. Обычные триггеры → запрос = весь промпт
+    2. Бэктики в сообщении → если есть контекст вопроса + бэктик-содержимое,
+       ищем по содержимому бэктика + теме вопроса
+    """
+    backtick_content = extract_backtick_context(prompt)
+    base_search = needs_web_search(prompt)
+
+    if base_search:
+        # Если есть бэктики — добавляем их содержимое к запросу
+        if backtick_content:
+            return True, backtick_content + " " + prompt
+        return True, prompt
+
+    # Нет явного триггера — но есть бэктики + слова намерения
+    if backtick_content:
+        p = prompt.lower()
+        # Слова "как правильно / как делать / как использовать / что это / объясни"
+        HOW_WORDS = [
+            "как правильно", "как сделать", "как делать", "как использовать",
+            "как работает", "как написать", "как установить",
+            "что это", "что такое", "объясни", "расскажи про", "расскажи о",
+            "помоги с", "проблема с", "ошибка в", "не работает",
+            "how to", "what is", "explain", "how does", "help with",
+        ]
+        # Также: "как ... правильно" / "как ... делать" с любым словом между ними
+        import re as _re
+        has_how_pattern = bool(_re.search(r'как.{0,30}(правильно|делать|использовать|работает|написать|сделать)', p))
+        if any(w in p for w in HOW_WORDS) or has_how_pattern:
+            return True, backtick_content + " " + prompt
+
+    return False, prompt
+
 
 def extract_search_query(prompt: str) -> str:
-    """Убирает триггерные фразы, сохраняя оригинальный регистр остатка."""
-    p_lower = prompt.lower()
-    result = prompt  # работаем с оригиналом
-    for t in sorted(_SEARCH_TRIGGERS, key=len, reverse=True):  # длинные первыми
-        idx = p_lower.find(t)
-        if idx != -1:
-            result = (result[:idx] + result[idx+len(t):]).strip(" ,.:;")
-            p_lower = result.lower()
-    return result.strip() if len(result.strip()) > 2 else prompt.strip()
+    """Убирает служебные слова (действие + инет), оставляя суть запроса."""
+    import re
+    p = prompt
+    _remove = _STANDALONE_TRIGGERS + _ACTION_WORDS + _INET_WORDS
+    for t in sorted(_remove, key=len, reverse=True):
+        p = re.sub(re.escape(t), "", p, flags=re.IGNORECASE)
+    p = re.sub(r'\s+', ' ', p).strip(" ,.:;-–—?!")
+    return p if len(p) > 2 else prompt.strip()
 
 def _format_search_results(query: str, results: list) -> str:
     """Форматирует список результатов поиска в текст для промпта."""
@@ -334,14 +430,14 @@ async def web_search(query: str, max_results: int = 6) -> str:
 
 # Текущая модель хранится в MongoDB для синхронизации
 def get_current_model():
-    return db_get("current_model", "deepseek-r1-distill-llama-70b")
+    return db_get("current_model", "qwen/qwen3-32b")
 
 def set_current_model(model):
     db_set("current_model", model)
 
 # Для удобства — инициализируем если не задана
 if not db_get("current_model"):
-    set_current_model("deepseek-r1-distill-llama-70b")
+    set_current_model("qwen/qwen3-32b")
 
 def get_auto_mode():
     return db_get("auto_mode", False)
@@ -352,7 +448,7 @@ def set_auto_mode(val: bool):
 # Порядок перебора моделей в авто-режиме (от надёжных к запасным)
 # Порядок: сначала некензурированные модели, потом Gemini как fallback
 AUTO_FALLBACK_ORDER = [
-    "deepseek-r1-distill-llama-70b",   # 1. Самый некензурированный (Groq)
+    "qwen/qwen3-32b",                   # 1. Reasoning (Groq, заменил deprecated deepseek-r1-distill-llama-70b)
     "qwen/qwen3-32b",                   # 2. Qwen3 — почти без фильтров (Groq)
     "qwen-qwq-32b",                     # 3. Reasoning (Groq)
     "openai/gpt-oss-120b",              # 4. OpenAI open-weight (Groq)
@@ -471,8 +567,8 @@ MODELS_INFO = {
         "desc": "OpenAI лёгкая ~1000 tok/s", "provider": "Groq"
     },
     # ===== GROQ — DeepSeek =====
-    "deepseek-r1-distill-llama-70b": {
-        "label": "DeepSeek R1 Llama 70B", "call": "deepseek-r1-distill-llama-70b",
+    "qwen/qwen3-32b": {
+        "label": "Qwen3 32B", "call": "qwen/qwen3-32b",
         "rpm": 30, "rpd": 1000, "tpm": 128000,
         "desc": "Reasoning: математика и код 🧠", "provider": "Groq"
     },
@@ -939,18 +1035,9 @@ def _needs_uncensored(prompt: str) -> bool:
 
 
 # Ключевые слова — пользователь явно просит поискать в интернете
-_WEB_KEYWORDS = [
-    "найди в интернете", "поищи в интернете", "погугли", "загугли",
-    "найди в сети", "поищи в сети", "найди онлайн", "актуальная информация",
-    "последние новости", "свежие новости", "что сейчас", "текущая цена",
-    "сколько стоит сейчас", "последняя версия", "find online", "search the web",
-    "look up", "google it", "latest news", "current price",
-]
-
 def _wants_web_search(prompt: str) -> bool:
-    """Проверяет, просит ли пользователь поиск в интернете."""
-    p = prompt.lower()
-    return any(kw in p for kw in _WEB_KEYWORDS)
+    """Алиас для needs_web_search — используем единый список триггеров."""
+    return needs_web_search(prompt)
 
 
 async def _extract_search_query_ai(prompt: str) -> str:
@@ -984,17 +1071,17 @@ async def ask_ai(uid, prompt, channel=None, media_parts=None):
     media_parts = media_parts or []
 
     # ── Веб-поиск (двухмодельная система) ────────────────────────────────────
-    # Шаг 1: быстрая модель извлекает запрос → поиск → основная модель отвечает
+    # needs_web_search_enhanced учитывает бэктики: `код` / ```блок``` → поиск по содержимому
     search_context = ""
-    if needs_web_search(prompt):
-        # Быстрая модель формулирует поисковый запрос
-        search_q = await _extract_search_query_ai(prompt)
+    do_search, search_hint = needs_web_search_enhanced(prompt)
+    if do_search:
+        # Быстрая модель формулирует поисковый запрос (с учётом бэктик-контента как hint)
+        search_q = await _extract_search_query_ai(search_hint)
         if channel:
             try:
                 await channel.typing()
             except Exception:
                 pass
-        # Поиск
         search_context = await web_search(search_q, max_results=6)
 
     # Если есть результаты — добавляем к промпту для основной модели
@@ -1019,10 +1106,10 @@ async def ask_ai(uid, prompt, channel=None, media_parts=None):
     elif get_auto_mode():
         cur = get_current_model()
         if _wants_web_search(prompt) and cur not in WEB_SEARCH_MODELS and not search_context:
-            # Роутим на compound только если DDG поиск не сработал
-            order = ["groq/compound"] + [m for m in AUTO_FALLBACK_ORDER if m not in WEB_SEARCH_MODELS]
-        elif _needs_uncensored(prompt) and cur not in {"deepseek-r1-distill-llama-70b", "qwen/qwen3-32b", "qwen-qwq-32b"}:
-            uncensored_first = ["deepseek-r1-distill-llama-70b", "qwen/qwen3-32b", "qwen-qwq-32b",
+            # DDG/Tavily не сработали → роутим на compound (встроенный поиск Groq)
+            order = ["groq/compound", "groq/compound-mini"] + [m for m in AUTO_FALLBACK_ORDER if m not in WEB_SEARCH_MODELS]
+        elif _needs_uncensored(prompt) and cur not in {"qwen/qwen3-32b", "qwen-qwq-32b"}:
+            uncensored_first = ["qwen/qwen3-32b", "qwen-qwq-32b",
                                  "openai/gpt-oss-120b", "openai/gpt-oss-20b", "moonshotai/kimi-k2-instruct-0905"]
             rest = [m for m in AUTO_FALLBACK_ORDER if m not in uncensored_first]
             order = uncensored_first + rest
@@ -1153,7 +1240,7 @@ def _get_response_badge(thinking: str, model_name: str = "", used_ddg: bool = Fa
     """Возвращает значки в зависимости от типа ответа."""
     # Модели которые реально "думают" (reasoning) — у них <think> ожидаем
     REASONING_MODELS = {
-        "deepseek-r1-distill-llama-70b", "qwen-qwq-32b", "qwen/qwen3-32b",
+        "qwen/qwen3-32b", "qwen-qwq-32b",
         "hf/deepseek-r1", "cerebras/qwen-3-235b",
     }
     badges = []
@@ -1351,11 +1438,11 @@ class ImageGenModal(discord.ui.Modal, title="🎨 Генерация изобр�
 
 class WebSearchModal(discord.ui.Modal, title="🌐 Поиск в интернете"):
     query = discord.ui.TextInput(
-        label="Что найти?",
-        style=discord.TextStyle.short,
-        placeholder="последние новости AI, погода в Москве...",
+        label="Что найти? (можно с `кодом` в бэктиках)",
+        style=discord.TextStyle.paragraph,
+        placeholder="курс доллара сегодня\nкак правильно использовать `async/await` в Python\nпоследние новости AI",
         required=True,
-        max_length=500,
+        max_length=800,
     )
 
     async def on_submit(self, interaction: discord.Interaction):
@@ -1416,10 +1503,12 @@ class AIPanelView(discord.ui.View):
             description=(
                 "**Active model:** " + m.get("label", cur) + web_note + "\n"
                 + "**Your tokens:** \U0001f4ce " + str(bal) + "\n\n"
-                + "**\U0001f4ac Write** \u2014 any question\n"
-                + "**\U0001f3a8 Generate image** \u2014 create image by description\n"
-                + "**\U0001f310 Web search** \u2014 find actual info online\n"
-                + "**\U0001f4ce Attach file/photo** \u2014 how to attach files"
+                + "**\U0001f4ac Write** \u2014 любой вопрос\n"
+                + "**\U0001f3a8 Generate image** \u2014 создать картинку\n"
+                + "**\U0001f310 Web search** \u2014 поиск в интернете\n"
+                + "**\U0001f4ce Attach file/photo** \u2014 анализ файлов\n\n"
+                + "\U0001f4a1 **Tip:** оберни слово в \u0060бэктики\u0060 \u2014 бот поищет инфу по нему:\n"
+                + "\u0060\u0060\u0060?ai как правильно использовать `useState` в React?\u0060\u0060\u0060"
             ),
             color=0x9b59b6,
         )
@@ -1589,7 +1678,7 @@ class ModelSelectGroq(discord.ui.Select):
             discord.SelectOption(label="Llama 4 Scout 17B", value="meta-llama/llama-4-scout-17b-16e-instruct", emoji="🔭", description="131K контекст"),
             discord.SelectOption(label="GPT-OSS 120B", value="openai/gpt-oss-120b", emoji="🤖", description="OpenAI open-weight • 500 tok/s"),
             discord.SelectOption(label="GPT-OSS 20B", value="openai/gpt-oss-20b", emoji="⚡", description="OpenAI лёгкая • 1000 tok/s"),
-            discord.SelectOption(label="DeepSeek R1 Llama 70B", value="deepseek-r1-distill-llama-70b", emoji="🧠", description="Reasoning: матем и код"),
+            discord.SelectOption(label="Qwen3 32B", value="qwen/qwen3-32b", emoji="🧠", description="Reasoning: матем и код"),
             discord.SelectOption(label="Qwen QwQ 32B", value="qwen-qwq-32b", emoji="🌟", description="Reasoning от Alibaba"),
             discord.SelectOption(label="Qwen3 32B 🆕", value="qwen/qwen3-32b", emoji="✨", description="Новейший Qwen3 • 400 tok/s"),
             discord.SelectOption(label="Kimi K2 🆕", value="moonshotai/kimi-k2-instruct-0905", emoji="🌙", description="262K контекст"),
