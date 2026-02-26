@@ -1670,17 +1670,15 @@ class ModelSelectGoogle(discord.ui.Select):
 class ModelSelectGroq(discord.ui.Select):
     def __init__(self):
         options = [
-            discord.SelectOption(label="🔍 Compound (поиск в инете)", value="groq/compound", emoji="🌐", description="Реальный веб-поиск • 200 RPM"),
-            discord.SelectOption(label="🔎 Compound Mini (поиск)", value="groq/compound-mini", emoji="🌐", description="Поиск, быстрее • 200 RPM"),
+            discord.SelectOption(label="🔍 Compound (поиск)", value="groq/compound", emoji="🌐", description="Встроенный веб-поиск • 200 RPM"),
+            discord.SelectOption(label="🔎 Compound Mini", value="groq/compound-mini", emoji="🌐", description="Поиск, быстрее • 200 RPM"),
             discord.SelectOption(label="Llama 3.3 70B ⭐", value="llama-3.3-70b-versatile", emoji="🦙", description="Рекомендуется • 280 tok/s"),
             discord.SelectOption(label="Llama 3.1 8B Instant", value="llama-3.1-8b-instant", emoji="💨", description="560 tok/s • макс запросов"),
-            discord.SelectOption(label="Llama 4 Maverick 17B", value="meta-llama/llama-4-maverick-17b-128e-instruct", emoji="🦙", description="Новейший Llama 4"),
             discord.SelectOption(label="Llama 4 Scout 17B", value="meta-llama/llama-4-scout-17b-16e-instruct", emoji="🔭", description="131K контекст"),
             discord.SelectOption(label="GPT-OSS 120B", value="openai/gpt-oss-120b", emoji="🤖", description="OpenAI open-weight • 500 tok/s"),
-            discord.SelectOption(label="GPT-OSS 20B", value="openai/gpt-oss-20b", emoji="⚡", description="OpenAI лёгкая • 1000 tok/s"),
-            discord.SelectOption(label="Qwen3 32B", value="qwen/qwen3-32b", emoji="🧠", description="Reasoning: матем и код"),
+            discord.SelectOption(label="GPT-OSS 20B", value="openai/gpt-oss-20b", emoji="⚡", description="1000 tok/s • быстрая"),
+            discord.SelectOption(label="Qwen3 32B 🧠", value="qwen/qwen3-32b", emoji="🧠", description="Reasoning • 400 tok/s"),
             discord.SelectOption(label="Qwen QwQ 32B", value="qwen-qwq-32b", emoji="🌟", description="Reasoning от Alibaba"),
-            discord.SelectOption(label="Qwen3 32B 🆕", value="qwen/qwen3-32b", emoji="✨", description="Новейший Qwen3 • 400 tok/s"),
             discord.SelectOption(label="Kimi K2 🆕", value="moonshotai/kimi-k2-instruct-0905", emoji="🌙", description="262K контекст"),
         ]
         super().__init__(placeholder="⚡ Groq модели...", min_values=1, max_values=1, options=options, custom_id="select_groq", row=1)
