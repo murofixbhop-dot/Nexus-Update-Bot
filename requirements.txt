@@ -8,4 +8,3 @@ aiohttp
 google-genai
 duckduckgo-search
 chromium
-mineflayer
