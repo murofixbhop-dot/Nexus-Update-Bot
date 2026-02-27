@@ -387,7 +387,6 @@ MODELS_INFO = {
     "qwen/qwen3-32b":       {"label": "Qwen3 32B 🧠",        "call": "qwen/qwen3-32b",       "rpm": 30,  "rpd": 1000, "tpm": 128000,  "desc": "Reasoning",            "provider": "Groq"},
     "qwen-qwq-32b":         {"label": "Qwen QwQ 32B",        "call": "qwen-qwq-32b",         "rpm": 30,  "rpd": 1000, "tpm": 131072,  "desc": "Reasoning Alibaba",    "provider": "Groq"},
     "moonshotai/kimi-k2-instruct-0905":{"label":"Kimi K2 🆕","call":"moonshotai/kimi-k2-instruct-0905","rpm":30,"rpd":1000,"tpm":262144,"desc":"262K контекст","provider":"Groq"},
-    "groq/compound":        {"label": "Compound 🌐",         "call": "groq/compound",        "rpm": 30,  "rpd": 1000, "tpm": 131072,  "desc": "Поиск в интернете",    "provider": "Groq"},
     "groq/compound":        {"label": "Compound 🌐 (поиск)", "call": "groq/compound",        "rpm": 30,  "rpd": 1000, "tpm": 131072,  "desc": "Реальный поиск в интернете 🔍", "provider": "Groq"},
     "groq/compound-mini":   {"label": "Compound Mini 🌐 (поиск)", "call": "groq/compound-mini", "rpm": 30, "rpd": 1000, "tpm": 131072,  "desc": "Поиск в интернете, быстрее", "provider": "Groq"},
     # ===== CEREBRAS (бесплатно: 1M токен/день) =====
@@ -1156,7 +1155,7 @@ async def send_ai_reply(interaction, answer_text, ephemeral=True, model_name="",
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# UI — МОДАЛКИ И ВЬЮШКИ (без изменений)
+# UI — МОДАЛКИ И ВЬЮШКИ
 # ══════════════════════════════════════════════════════════════════════════════
 class AskAIModal(discord.ui.Modal, title="Nexus AI — Задать вопрос"):
     prompt = discord.ui.TextInput(label="Твой вопрос или запрос", style=discord.TextStyle.paragraph, placeholder="Напиши сюда что угодно...", required=True, max_length=2000)
@@ -2074,7 +2073,6 @@ async def on_message(message):
             parts_cmd = message.content.split(None, 1)
             arg = parts_cmd[1].strip().lower() if len(parts_cmd) > 1 else ""
             uid = message.author.id
-            # Маппинг коротких имён
             shortcuts = {
                 "deepseek-r1":   "hf/deepseek-r1",
                 "deepseek-v3":   "hf/deepseek-v3",
@@ -2094,7 +2092,6 @@ async def on_message(message):
                     delete_after=20
                 )
                 return
-            # Resolve model
             if arg in shortcuts:
                 model_key = shortcuts[arg]
             elif arg in OWNER_EXCLUSIVE_MODELS:
