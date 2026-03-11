@@ -1,0 +1,17 @@
+{
+  "name": "nexus-mc-bot",
+  "version": "1.0.0",
+  "main": "afk_bot.js",
+  "scripts": {
+    "start": "node afk_bot.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.15.3",
+    "minecraft-data": "^3.105.0",
+    "mineflayer": "latest",
+    "mineflayer-collectblock": "^1.6.0",
+    "mineflayer-pathfinder": "^2.4.5",
+    "mineflayer-pvp": "^1.3.2",
+    "mineflayer-tool": "^1.2.0"
+  }
+}
