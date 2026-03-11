@@ -5,7 +5,6 @@ google-genai
 pymongo
 openai
 aiohttp
-duckduckgo-search
 chromium
+duckduckgo-search
 groq
-customtkinter
