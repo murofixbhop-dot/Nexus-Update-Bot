@@ -531,165 +531,206 @@ bot.on('error',e=>S({t:'error',msg:e.message}))
 bot.on('end',()=>{S({t:'end'});process.exit(0)})
 """
 
-# ─── Aternos manager (через API, без браузера) ────────────────────────────
+# ─── Aternos manager (через API v2) ──────────────────────────────────────
 class AternosManager:
     """
-    Управление Aternos через внутренний API.
+    Управление Aternos через API.
     Нужны env vars: ATERNOS_USER, ATERNOS_PASS
-    Опционально: ATERNOS_SERVER_ID (если несколько серверов)
+    Опционально:    ATERNOS_SERVER_ID
     """
-    BASE   = "https://aternos.org"
-    AJAX   = "https://aternos.org/ajax"
-
     def __init__(self):
-        self.status    = "offline"
-        self._session  = None
-        self._server_id = None
-        self._sec      = None   # ATERNOS_SEC cookie (CSRF)
-        self._logged   = False
+        self.status     = "offline"
+        self._session   = None
+        self._server_id = os.getenv("ATERNOS_SERVER_ID", "")
+        self._token     = None   # X-Requested-With token
+        self._logged    = False
 
-    def _hdrs(self):
-        return {
-            "User-Agent":   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "X-Requested-With": "XMLHttpRequest",
-            "Referer":      "https://aternos.org/server/",
-            "Origin":       "https://aternos.org",
+    def _base_headers(self):
+        h = {
+            "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                               "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept":          "application/json, text/javascript, */*; q=0.01",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer":         "https://aternos.org/server/",
+            "Origin":          "https://aternos.org",
+            "X-Requested-With":"XMLHttpRequest",
         }
+        if self._token:
+            h["X-Requested-With"] = self._token
+        return h
 
-    async def _get_session(self):
+    async def _sess(self):
         if self._session and not self._session.closed:
             return self._session
-        self._session = aiohttp.ClientSession(headers=self._hdrs())
+        jar = aiohttp.CookieJar()
+        self._session = aiohttp.ClientSession(cookie_jar=jar)
         return self._session
 
     async def _login(self, user, pw):
-        """Логин и получение сессионных куки."""
-        s = await self._get_session()
+        s = await self._sess()
         try:
-            # Получаем страницу логина — берём куки
-            async with s.get(f"{self.BASE}/go/", timeout=aiohttp.ClientTimeout(total=20)) as r:
-                pass
-            # Логинимся
-            async with s.post(
-                f"{self.BASE}/ajax/account/login.php",
-                data={"user": user, "password": pw, "remember": "true"},
+            # 1. Главная страница — получаем начальные куки
+            async with s.get(
+                "https://aternos.org/go/",
+                headers=self._base_headers(),
                 timeout=aiohttp.ClientTimeout(total=20)
             ) as r:
-                data = await r.json(content_type=None)
-                if not data.get("success"):
-                    return False, data.get("error", "Неверный логин/пароль")
-            # Достаём ATERNOS_SEC из куки
-            for c in s.cookie_jar:
-                if c.key == "ATERNOS_SEC":
-                    self._sec = c.value; break
-            self._logged = True
-            return True, "ok"
+                html = await r.text()
+
+            # 2. Ищем CSRF токен в HTML
+            import re as _re
+            m = _re.search(r'AJAX_TOKEN[^"]*"([^"]+)"', html) or _re.search(r"AJAX_TOKEN[^']*'([^']+)'", html)
+            if m:
+                self._token = m.group(1)
+
+            # 3. POST логин
+            async with s.post(
+                "https://aternos.org/ajax/account/login.php",
+                headers=self._base_headers(),
+                data={"user": user, "password": pw},
+                timeout=aiohttp.ClientTimeout(total=20)
+            ) as r:
+                text = await r.text()
+                if not text.strip():
+                    # пустой ответ = ок на некоторых версиях
+                    self._logged = True
+                    return True, "ok"
+                try:
+                    data = json.loads(text)
+                except:
+                    # HTML ответ — проверяем редирект/куки
+                    if r.status in (200, 302):
+                        self._logged = True
+                        return True, "ok"
+                    return False, f"HTTP {r.status}: {text[:200]}"
+
+                if data.get("success") or data.get("error") is None:
+                    self._logged = True
+                    return True, "ok"
+                err = data.get("error") or data.get("message") or str(data)
+                return False, err
+
         except Exception as e:
             return False, str(e)
 
-    async def _get_server_id(self):
-        """Получить ID первого сервера в аккаунте."""
+    async def _api(self, path, method="GET", **kwargs):
+        """Универсальный запрос к Aternos API."""
+        s = await self._sess()
+        url = f"https://aternos.org/ajax/{path}"
+        params = kwargs.get("params", {})
+        if self._server_id:
+            params["server"] = self._server_id
+        if self._token:
+            params["SEC"]    = self._token
+        kwargs["params"]  = params
+        kwargs["headers"] = self._base_headers()
+        kwargs["timeout"] = aiohttp.ClientTimeout(total=20)
+        try:
+            if method == "GET":
+                async with s.get(url, **kwargs) as r:
+                    text = await r.text()
+            else:
+                async with s.post(url, **kwargs) as r:
+                    text = await r.text()
+            if not text.strip():
+                return {"success": True}
+            try:
+                return json.loads(text)
+            except:
+                # Если HTML — считаем успехом если статус 200
+                return {"success": r.status == 200, "raw": text[:300]}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _find_server_id(self):
+        """Автоматически найти ID сервера из HTML страницы."""
         if self._server_id:
             return self._server_id
-        # Из env vars
-        srv = os.getenv("ATERNOS_SERVER_ID", "")
-        if srv:
-            self._server_id = srv; return srv
-        # Авто — берём первый сервер
-        s = await self._get_session()
+        s = await self._sess()
         try:
             async with s.get(
-                f"{self.AJAX}/servers.php",
-                timeout=aiohttp.ClientTimeout(total=15)
-            ) as r:
-                data = await r.json(content_type=None)
-                servers = data.get("servers", [])
-                if servers:
-                    self._server_id = str(servers[0].get("id", ""))
-                    print(f"[Aternos] Сервер: {self._server_id} ({servers[0].get('address','')})")
-                    return self._server_id
-        except Exception as e:
-            print(f"[Aternos] get_server_id error: {e}")
-        return None
-
-    async def _server_action(self, action):
-        """Выполнить действие: start / stop / restart"""
-        s   = await self._get_session()
-        sid = await self._get_server_id()
-        if not sid:
-            return False, "Сервер не найден"
-        try:
-            params = {"TOKEN": self._sec} if self._sec else {}
-            async with s.get(
-                f"{self.AJAX}/server/{action}.php",
-                params={**params, "server": sid},
+                "https://aternos.org/servers/",
+                headers=self._base_headers(),
                 timeout=aiohttp.ClientTimeout(total=20)
             ) as r:
-                data = await r.json(content_type=None)
-                return data.get("success", False), data.get("error", "")
+                html = await r.text()
+            import re as _re
+            # Ищем data-id в HTML
+            ids = _re.findall('data-id="([^"]+)"', html) or _re.findall("data-id='([^']+)'", html)
+            if ids:
+                self._server_id = ids[0]
+                print(f"[Aternos] Найден server_id: {self._server_id}")
+                return self._server_id
         except Exception as e:
-            return False, str(e)
+            print(f"[Aternos] find_server_id: {e}")
+        return None
 
     async def get_status(self):
-        """Получить текущий статус сервера."""
-        s   = await self._get_session()
-        sid = await self._get_server_id()
-        if not sid: return "unknown"
-        try:
-            async with s.get(
-                f"{self.AJAX}/server/status.php",
-                params={"server": sid},
-                timeout=aiohttp.ClientTimeout(total=15)
-            ) as r:
-                data = await r.json(content_type=None)
-                st = data.get("status", "offline")
-                self.status = st
-                return st
-        except Exception as e:
-            print(f"[Aternos] get_status: {e}")
-        return self.status
+        if not self._logged:
+            return self.status
+        if not self._server_id:
+            await self._find_server_id()
+        data = await self._api("server/status.php")
+        st = data.get("status") or data.get("class") or "unknown"
+        self.status = st
+        return st
 
     async def start(self, user, pw):
-        """Запустить сервер Aternos."""
+        # Логин если нужен
         if not self._logged:
             ok, err = await self._login(user, pw)
             if not ok:
                 return f"❌ Ошибка входа в Aternos: {err}"
 
-        # Проверяем текущий статус
+        # Ищем сервер если не задан
+        if not self._server_id:
+            sid = await self._find_server_id()
+            if not sid:
+                return "❌ Сервер не найден. Добавь `ATERNOS_SERVER_ID` в env vars."
+
+        # Текущий статус
         st = await self.get_status()
         if st == "online":
             return "✅ Сервер уже онлайн!"
-        if st in ("starting", "loading", "preparing"):
-            return f"⏳ Сервер уже запускается (статус: `{st}`)..."
+        if st in ("starting", "loading", "preparing", "restarting"):
+            return f"⏳ Сервер уже запускается (`{st}`)..."
 
-        ok, err = await self._server_action("start")
-        if not ok:
+        # Запуск
+        data = await self._api("server/start.php")
+        if not data.get("success", True):  # если нет поля success — считаем ok
+            err = data.get("error", str(data))
+            if "already" in str(err).lower():
+                return "✅ Сервер уже запускается!"
             return f"❌ Не удалось запустить: {err}"
 
         self.status = "starting"
-        # Ждём онлайна (до 6 минут)
+        # Ждём онлайна до 6 минут
         for _ in range(72):
             await asyncio.sleep(5)
             st = await self.get_status()
             if st == "online":
                 return "✅ Aternos сервер онлайн!"
-            if st in ("offline", "crashed"):
-                return f"❌ Сервер упал: статус `{st}`"
+            if st in ("crashed",):
+                return f"❌ Сервер упал со статусом `{st}`"
         return "⏱ Timeout — сервер не запустился за 6 минут"
 
     async def stop_server(self):
-        """Остановить сервер."""
-        ok, err = await self._server_action("stop")
-        if ok:
+        if not self._logged:
+            return "❌ Не залогинен в Aternos"
+        data = await self._api("server/stop.php")
+        if data.get("success", True):
             self.status = "stopping"
             return "🛑 Сервер останавливается..."
-        return f"❌ Не удалось остановить: {err}"
+        return f"❌ {data.get('error', str(data))}"
 
     async def restart(self):
-        """Перезапустить сервер."""
-        ok, err = await self._server_action("restart")
-        return "🔄 Перезапускается..." if ok else f"❌ {err}"
+        if not self._logged:
+            return "❌ Не залогинен в Aternos"
+        data = await self._api("server/restart.php")
+        if data.get("success", True):
+            self.status = "restarting"
+            return "🔄 Перезапускается..."
+        return f"❌ {data.get('error', str(data))}"
 
 
 class MCBotManager:
