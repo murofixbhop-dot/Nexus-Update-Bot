@@ -531,99 +531,165 @@ bot.on('error',e=>S({t:'error',msg:e.message}))
 bot.on('end',()=>{S({t:'end'});process.exit(0)})
 """
 
-# ─── Aternos manager ──────────────────────────────────────────────────────
+# ─── Aternos manager (через API, без браузера) ────────────────────────────
 class AternosManager:
+    """
+    Управление Aternos через внутренний API.
+    Нужны env vars: ATERNOS_USER, ATERNOS_PASS
+    Опционально: ATERNOS_SERVER_ID (если несколько серверов)
+    """
+    BASE   = "https://aternos.org"
+    AJAX   = "https://aternos.org/ajax"
+
     def __init__(self):
-        self._pw = self._browser = self._page = None
-        self.status = "offline"
+        self.status    = "offline"
+        self._session  = None
+        self._server_id = None
+        self._sec      = None   # ATERNOS_SEC cookie (CSRF)
+        self._logged   = False
 
-    async def _browser_ok(self):
-        if self._browser:
-            try:
-                if self._browser.is_connected():
-                    return True
-            except:
+    def _hdrs(self):
+        return {
+            "User-Agent":   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer":      "https://aternos.org/server/",
+            "Origin":       "https://aternos.org",
+        }
+
+    async def _get_session(self):
+        if self._session and not self._session.closed:
+            return self._session
+        self._session = aiohttp.ClientSession(headers=self._hdrs())
+        return self._session
+
+    async def _login(self, user, pw):
+        """Логин и получение сессионных куки."""
+        s = await self._get_session()
+        try:
+            # Получаем страницу логина — берём куки
+            async with s.get(f"{self.BASE}/go/", timeout=aiohttp.ClientTimeout(total=20)) as r:
                 pass
-        try:
-            from playwright.async_api import async_playwright
-            self._pw      = await async_playwright().__aenter__()
-            self._browser = await self._pw.chromium.launch(headless=True)
-            return True
+            # Логинимся
+            async with s.post(
+                f"{self.BASE}/ajax/account/login.php",
+                data={"user": user, "password": pw, "remember": "true"},
+                timeout=aiohttp.ClientTimeout(total=20)
+            ) as r:
+                data = await r.json(content_type=None)
+                if not data.get("success"):
+                    return False, data.get("error", "Неверный логин/пароль")
+            # Достаём ATERNOS_SEC из куки
+            for c in s.cookie_jar:
+                if c.key == "ATERNOS_SEC":
+                    self._sec = c.value; break
+            self._logged = True
+            return True, "ok"
         except Exception as e:
-            print(f"[Aternos] browser error: {e}"); return False
+            return False, str(e)
 
-    async def start(self, user, pw):
-        if not await self._browser_ok():
-            return "❌ playwright не установлен: `pip install playwright && playwright install chromium`"
+    async def _get_server_id(self):
+        """Получить ID первого сервера в аккаунте."""
+        if self._server_id:
+            return self._server_id
+        # Из env vars
+        srv = os.getenv("ATERNOS_SERVER_ID", "")
+        if srv:
+            self._server_id = srv; return srv
+        # Авто — берём первый сервер
+        s = await self._get_session()
         try:
-            self._page = await self._browser.new_page()
-            await self._page.goto("https://aternos.org/go/", timeout=30000)
-            await self._page.wait_for_load_state("networkidle", timeout=15000)
-            if await self._page.locator("#user").count() > 0:
-                await self._page.fill("#user", user)
-                await self._page.fill("#password", pw)
-                await self._page.click("button[name='submit']")
-                await self._page.wait_for_load_state("networkidle", timeout=15000)
-            await self._page.goto("https://aternos.org/server/", timeout=20000)
-            await self._page.wait_for_load_state("networkidle", timeout=15000)
-            clicked = False
-            for sel in [".start-button","#start","button:has-text('Start')"]:
-                try:
-                    b = self._page.locator(sel)
-                    if await b.count() > 0:
-                        await b.first.click(timeout=8000); clicked = True; break
-                except: pass
-            if not clicked:
-                c = await self._page.content()
-                if "online" in c.lower():
-                    self.status = "online"; return "✅ Сервер уже онлайн!"
-                return "❌ Кнопка Start не найдена"
-            self.status = "starting"
-            await asyncio.sleep(3)
-            return await self._wait_online()
+            async with s.get(
+                f"{self.AJAX}/servers.php",
+                timeout=aiohttp.ClientTimeout(total=15)
+            ) as r:
+                data = await r.json(content_type=None)
+                servers = data.get("servers", [])
+                if servers:
+                    self._server_id = str(servers[0].get("id", ""))
+                    print(f"[Aternos] Сервер: {self._server_id} ({servers[0].get('address','')})")
+                    return self._server_id
         except Exception as e:
-            return f"❌ Ошибка: {e}"
+            print(f"[Aternos] get_server_id error: {e}")
+        return None
 
-    async def _wait_online(self):
-        for i in range(72):
-            await asyncio.sleep(5)
-            try:
-                c = await self._page.content()
-                for sel in ["button:has-text('Confirm')","button:has-text('Yes')",".btn-confirm","#confirm"]:
-                    try:
-                        b = self._page.locator(sel)
-                        if await b.count() > 0:
-                            await b.first.click(); await asyncio.sleep(2)
-                    except: pass
-                if any(x in c.lower() for x in ["status-online","server is online"]):
-                    self.status = "online"; return "✅ Сервер запущен!"
-                self.status = "queue"
-            except Exception as e:
-                print(f"[Aternos] wait_online: {e}")
-        return "⏱ Timeout — сервер не запустился за 6 минут"
+    async def _server_action(self, action):
+        """Выполнить действие: start / stop / restart"""
+        s   = await self._get_session()
+        sid = await self._get_server_id()
+        if not sid:
+            return False, "Сервер не найден"
+        try:
+            params = {"TOKEN": self._sec} if self._sec else {}
+            async with s.get(
+                f"{self.AJAX}/server/{action}.php",
+                params={**params, "server": sid},
+                timeout=aiohttp.ClientTimeout(total=20)
+            ) as r:
+                data = await r.json(content_type=None)
+                return data.get("success", False), data.get("error", "")
+        except Exception as e:
+            return False, str(e)
 
     async def get_status(self):
-        if not self._page: return "offline"
+        """Получить текущий статус сервера."""
+        s   = await self._get_session()
+        sid = await self._get_server_id()
+        if not sid: return "unknown"
         try:
-            await self._page.reload(timeout=10000)
-            c = await self._page.content()
-            for s in ["online","starting","queue","stopping","offline"]:
-                if s in c.lower():
-                    self.status = s; return s
-        except: pass
-        return "unknown"
+            async with s.get(
+                f"{self.AJAX}/server/status.php",
+                params={"server": sid},
+                timeout=aiohttp.ClientTimeout(total=15)
+            ) as r:
+                data = await r.json(content_type=None)
+                st = data.get("status", "offline")
+                self.status = st
+                return st
+        except Exception as e:
+            print(f"[Aternos] get_status: {e}")
+        return self.status
+
+    async def start(self, user, pw):
+        """Запустить сервер Aternos."""
+        if not self._logged:
+            ok, err = await self._login(user, pw)
+            if not ok:
+                return f"❌ Ошибка входа в Aternos: {err}"
+
+        # Проверяем текущий статус
+        st = await self.get_status()
+        if st == "online":
+            return "✅ Сервер уже онлайн!"
+        if st in ("starting", "loading", "preparing"):
+            return f"⏳ Сервер уже запускается (статус: `{st}`)..."
+
+        ok, err = await self._server_action("start")
+        if not ok:
+            return f"❌ Не удалось запустить: {err}"
+
+        self.status = "starting"
+        # Ждём онлайна (до 6 минут)
+        for _ in range(72):
+            await asyncio.sleep(5)
+            st = await self.get_status()
+            if st == "online":
+                return "✅ Aternos сервер онлайн!"
+            if st in ("offline", "crashed"):
+                return f"❌ Сервер упал: статус `{st}`"
+        return "⏱ Timeout — сервер не запустился за 6 минут"
 
     async def stop_server(self):
-        if not self._page: return "❌ Браузер не открыт"
-        try:
-            for sel in ["button:has-text('Stop')",".stop-button","#stop"]:
-                b = self._page.locator(sel)
-                if await b.count() > 0:
-                    await b.first.click(timeout=8000)
-                    self.status = "stopping"; return "🛑 Останавливается..."
-            return "❌ Кнопка Stop не найдена"
-        except Exception as e:
-            return f"❌ {e}"
+        """Остановить сервер."""
+        ok, err = await self._server_action("stop")
+        if ok:
+            self.status = "stopping"
+            return "🛑 Сервер останавливается..."
+        return f"❌ Не удалось остановить: {err}"
+
+    async def restart(self):
+        """Перезапустить сервер."""
+        ok, err = await self._server_action("restart")
+        return "🔄 Перезапускается..." if ok else f"❌ {err}"
 
 
 class MCBotManager:
@@ -1595,6 +1661,60 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # ══════════════════════════════════════════════════════════════════════════════
 # MINECRAFT PANEL VIEW
 # ══════════════════════════════════════════════════════════════════════════════
+# ── Модальное окно для запуска Aternos ────────────────────────────────────
+class AternosStartModal(discord.ui.Modal, title="🚀 Запустить Aternos сервер"):
+    aternos_user = discord.ui.TextInput(
+        label="Логин Aternos",
+        placeholder="твой_логин",
+        required=True, max_length=64
+    )
+    aternos_pass = discord.ui.TextInput(
+        label="Пароль Aternos",
+        placeholder="твой_пароль",
+        required=True, max_length=64,
+        style=discord.TextStyle.short
+    )
+    mc_addr = discord.ui.TextInput(
+        label="Адрес сервера (после запуска зайти)",
+        placeholder="example.aternos.me:25565  (оставь пустым — не заходить)",
+        required=False, max_length=100
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        user = self.aternos_user.value.strip()
+        pw   = self.aternos_pass.value.strip()
+        addr = self.mc_addr.value.strip()
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        await interaction.followup.send("⏳ Входжу в Aternos и запускаю сервер...", ephemeral=True)
+
+        res = await aternos_mgr.start(user, pw)
+        await interaction.followup.send(res, ephemeral=True)
+
+        # Если дан адрес и сервер успешно запущен — заходим
+        if addr and "✅" in res:
+            await asyncio.sleep(5)
+            raw = addr
+            if ":" in raw:
+                parts = raw.rsplit(":", 1)
+                host = parts[0]
+                try:   port = int(parts[1])
+                except: port = 25565
+            else:
+                host = raw; port = 25565
+
+            if mc_bot.connected: mc_bot.stop(); await asyncio.sleep(1)
+            ok = mc_bot.start(host, port, MC_USERNAME, MC_VERSION)
+            if not ok:
+                await interaction.followup.send("❌ Node.js не найден!", ephemeral=True); return
+            for _ in range(25):
+                await asyncio.sleep(2)
+                if mc_bot.connected:
+                    await interaction.followup.send(
+                        f"✅ Бот зашёл на `{host}:{port}`!", ephemeral=True); return
+            await interaction.followup.send("⏳ Бот запущен, жду спавн...", ephemeral=True)
+
+
 # ── Модальное окно для ввода адреса сервера ───────────────────────────────
 class MCJoinModal(discord.ui.Modal, title="🔌 Подключить MC бота"):
     server_addr = discord.ui.TextInput(
@@ -1680,21 +1800,27 @@ class MCPanelView(discord.ui.View):
     @discord.ui.button(label="▶ Запустить", style=discord.ButtonStyle.success, custom_id="mc_start", emoji="🚀", row=0)
     async def btn_start(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self._is_owner(interaction): return await self._deny(interaction)
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        if not ATERNOS_USER or not ATERNOS_PASS:
-            await interaction.followup.send("❌ `ATERNOS_USER` / `ATERNOS_PASS` не заданы.", ephemeral=True); return
-        res = await aternos_mgr.start(ATERNOS_USER, ATERNOS_PASS)
-        await interaction.followup.send(res, ephemeral=True)
-        if "✅" in res and MC_SERVER:
-            await asyncio.sleep(3)
-            ok = mc_bot.start(MC_SERVER, MC_PORT_NUM, MC_USERNAME, MC_VERSION)
-            if not ok:
-                await interaction.followup.send("❌ Node.js не найден. Установи зависимости.", ephemeral=True); return
-            for _ in range(20):
-                await asyncio.sleep(2)
-                if mc_bot.connected:
-                    await interaction.followup.send(f"✅ Зашёл как **{MC_USERNAME}**!", ephemeral=True); return
-            await interaction.followup.send("⏳ Бот запущен, жду спавн...", ephemeral=True)
+        # Если логин/пароль заданы в env — запускаем сразу, иначе открываем модалку
+        if ATERNOS_USER and ATERNOS_PASS:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            res = await aternos_mgr.start(ATERNOS_USER, ATERNOS_PASS)
+            await interaction.followup.send(res, ephemeral=True)
+            if "✅" in res and MC_SERVER:
+                await asyncio.sleep(3)
+                ok = mc_bot.start(MC_SERVER, MC_PORT_NUM, MC_USERNAME, MC_VERSION)
+                if not ok:
+                    await interaction.followup.send("❌ Node.js не найден.", ephemeral=True); return
+                for _ in range(20):
+                    await asyncio.sleep(2)
+                    if mc_bot.connected:
+                        await interaction.followup.send(f"✅ Зашёл как **{MC_USERNAME}**!", ephemeral=True); return
+                await interaction.followup.send("⏳ Бот запущен, жду спавн...", ephemeral=True)
+        else:
+            # Открываем модальное окно для ввода логина/пароля/адреса
+            modal = AternosStartModal()
+            if MC_SERVER:
+                modal.mc_addr.default = MC_SERVER
+            await interaction.response.send_modal(modal)
 
     @discord.ui.button(label="⏹ Стоп", style=discord.ButtonStyle.danger, custom_id="mc_stop", emoji="🛑", row=0)
     async def btn_stop(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1703,6 +1829,13 @@ class MCPanelView(discord.ui.View):
         mc_bot.stop()
         res = await aternos_mgr.stop_server()
         await interaction.followup.send(f"👋 Бот отключён. Aternos: {res}", ephemeral=True)
+
+    @discord.ui.button(label="🔄 Рестарт", style=discord.ButtonStyle.secondary, custom_id="mc_restart_btn", emoji="🔄", row=0)
+    async def btn_restart(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self._is_owner(interaction): return await self._deny(interaction)
+        await interaction.response.defer(ephemeral=True)
+        res = await aternos_mgr.restart()
+        await interaction.followup.send(res, ephemeral=True)
 
     @discord.ui.button(label="🔌 Подключить", style=discord.ButtonStyle.primary, custom_id="mc_join_btn", emoji="🔌", row=0)
     async def btn_join(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1953,17 +2086,29 @@ async def on_message(message):
         cmd = content.lstrip("!").lower().split()[0] if content else ""
         args_raw = content.split(None, 1)[1] if len(content.split()) > 1 else ""
 
-        # !mcstart — запустить Aternos + зайти в MC
+        # !mcstart [адрес] — запустить Aternos + зайти в MC
         if cmd == "mcstart":
-            m = await message.channel.send("⏳ Запускаю Aternos...")
-            res = await aternos_mgr.start(ATERNOS_USER, ATERNOS_PASS)
+            user = ATERNOS_USER; pw = ATERNOS_PASS
+            if not user or not pw:
+                await message.channel.send(
+                    "❌ Добавь `ATERNOS_USER` и `ATERNOS_PASS` в env vars на Render,\n"
+                    "или используй кнопку 🚀 на панели (там можно ввести вручную)."
+                ); return
+            addr = args_raw.strip() or MC_SERVER
+            m = await message.channel.send("⏳ Вхожу в Aternos и запускаю сервер...")
+            res = await aternos_mgr.start(user, pw)
             await m.edit(content=res)
-            if "✅" in res and MC_SERVER:
-                await asyncio.sleep(5)
-                m2 = await message.channel.send("🔌 Захожу в Minecraft...")
-                ok = mc_bot.start(MC_SERVER, MC_PORT_NUM, MC_USERNAME, MC_VERSION)
+            if "✅" in res and addr:
+                await asyncio.sleep(3)
+                raw = addr
+                host = raw.split(":")[0] if ":" in raw else raw
+                try: port = int(raw.split(":")[1]) if ":" in raw else MC_PORT_NUM
+                except: port = MC_PORT_NUM
+                if mc_bot.connected: mc_bot.stop(); await asyncio.sleep(1)
+                m2 = await message.channel.send(f"🔌 Захожу на `{host}:{port}`...")
+                ok = mc_bot.start(host, port, MC_USERNAME, MC_VERSION)
                 if not ok:
-                    await m2.edit(content="❌ Node.js не найден!\nhttps://nodejs.org\n`npm install mineflayer`"); return
+                    await m2.edit(content="❌ Node.js не найден!"); return
                 for _ in range(15):
                     await asyncio.sleep(2)
                     if mc_bot.connected:
