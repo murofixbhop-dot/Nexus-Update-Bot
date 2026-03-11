@@ -20,8 +20,10 @@ const toolPlugin    = require('mineflayer-tool').plugin
 const Vec3          = require('vec3')
 const https         = require('https')
 
-const HOST = process.argv[2] || 'jorjinaplay.aternos.me'
-const PORT  = parseInt(process.argv[3]) || 20942
+const HOST    = process.argv[2] || process.env.MC_HOST    || 'jorjinaplay.aternos.me'
+const PORT    = parseInt(process.argv[3] || process.env.MC_PORT  || '20942')
+const USERNAME = process.argv[4] || process.env.MC_USER    || 'AI_Guardian'
+const VERSION  = process.argv[5] || process.env.MC_VERSION || false
 
 // ═══ API КЛЮЧИ (из env или вставь прямо сюда) ════════════════════
 const GROQ_KEY     = process.env.GROQ_KEY     || ''
@@ -30,84 +32,7 @@ const GEMINI_KEY   = process.env.GEMINI_KEY   || ''
 const MISTRAL_KEY  = process.env.MISTRAL_KEY  || ''
 const HF_TOKEN     = process.env.HF_TOKEN     || ''
 
-// ════════════════════════════════════════════════════════════════════
-//  DISCORD ИНТЕГРАЦИЯ
-//  Переменные окружения:
-//    DISCORD_TOKEN   — токен бота Discord
-//    MC_CHANNEL_ID   — ID канала куда бот пишет сообщения из MC
-//    MC_CMD_CHANNEL  — ID канала откуда Discord → MC команды (можно тот же)
-// ════════════════════════════════════════════════════════════════════
-const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js')
-
-const DISCORD_TOKEN    = process.env.DISCORD_TOKEN    || ''
-const MC_CHANNEL_ID    = process.env.MC_CHANNEL_ID    || ''
-const MC_CMD_CHANNEL   = process.env.MC_CMD_CHANNEL   || MC_CHANNEL_ID
-
-let dcClient    = null
-let mcChannel   = null
-let cmdChannel  = null
-let activeMcBot = null  // ссылка на текущего mineflayer-бота
-
-// Инициализируем Discord только если токен задан
-if (DISCORD_TOKEN) {
-  dcClient = new Client({
-    intents: [
-      GatewayIntentBits.Guilds,
-      GatewayIntentBits.GuildMessages,
-      GatewayIntentBits.MessageContent,
-    ]
-  })
-
-  dcClient.once('ready', () => {
-    console.log('🎮 Discord бот онлайн:', dcClient.user.tag)
-    mcChannel  = dcClient.channels.cache.get(MC_CHANNEL_ID)  || null
-    cmdChannel = dcClient.channels.cache.get(MC_CMD_CHANNEL) || null
-    if (!mcChannel)  console.warn('⚠️ MC_CHANNEL_ID не найден:', MC_CHANNEL_ID)
-    if (!cmdChannel) console.warn('⚠️ MC_CMD_CHANNEL не найден:', MC_CMD_CHANNEL)
-  })
-
-  // Сообщения Discord → Minecraft
-  dcClient.on('messageCreate', async msg => {
-    if (msg.author.bot) return
-    if (!cmdChannel || msg.channel.id !== cmdChannel.id) return
-    if (!activeMcBot) {
-      msg.reply('❌ Minecraft бот ещё не подключён').catch(() => {})
-      return
-    }
-    const text = msg.content.trim()
-    if (!text) return
-    // Отправляем сообщение в игру от имени Discord-юзера
-    try {
-      activeMcBot.chat(`[DC] ${msg.author.username}: ${text}`)
-    } catch (e) {
-      msg.reply('❌ Не удалось отправить: ' + e.message).catch(() => {})
-    }
-  })
-
-  dcClient.login(DISCORD_TOKEN).catch(e => {
-    console.error('❌ Discord логин провалился:', e.message)
-    dcClient = null
-  })
-}
-
-// Утилиты для отправки в Discord
-function dcSend (text) {
-  if (!mcChannel) return
-  mcChannel.send(text.slice(0, 2000)).catch(() => {})
-}
-
-function dcEmbed (title, description, color = 0x00b4d8) {
-  if (!mcChannel) return
-  const embed = new EmbedBuilder()
-    .setTitle(title)
-    .setDescription(description.slice(0, 4000))
-    .setColor(color)
-    .setTimestamp()
-  mcChannel.send({ embeds: [embed] }).catch(() => {})
-}
-
-// ════════════════════════════════════════════════════════════════════
-//  КОНСТАНТЫ ═══════════════════════════════════════════════════════
+// ═══ КОНСТАНТЫ ═══════════════════════════════════════════════════
 const FOODS = new Set([
   'apple','bread','steak','porkchop','chicken','cod','salmon',
   'mutton','rabbit','beef','cooked_beef','cooked_chicken','cooked_porkchop',
@@ -290,9 +215,8 @@ callAI._lastProvider = ''
 // ════════════════════════════════════════════════════════════════════
 function createBot () {
   const bot = mineflayer.createBot({
-    host: HOST, port: PORT, username: 'AI_Guardian', version: false
+    host: HOST, port: PORT, username: USERNAME, version: VERSION
   })
-  activeMcBot = bot  // сохраняем ссылку для Discord → MC
   bot.loadPlugin(pathfinder)
   bot.loadPlugin(collectPlugin)
   bot.loadPlugin(toolPlugin)
@@ -442,7 +366,6 @@ help         → args:[]                          — помощь
 
   bot.on('spawn', () => {
     console.log('✅ Бот подключился! Режим: ' + behaviorMode)
-    dcEmbed('✅ Minecraft Бот Онлайн', `Подключён к \`${HOST}:${PORT}\`\nРежим: **${behaviorMode}**`, 0x2ecc71)
     setTimeout(() => { applyMovements() }, 500)
     setTimeout(() => { if (autoArmor) equipBestArmor() }, 3000)
   })
@@ -2452,9 +2375,6 @@ help         → args:[]                          — помощь
     if (user === bot.username) return
     lastCmdTime = Date.now()
 
-    // Пересылаем чат в Discord (кроме команд — они и так видны по действиям)
-    dcSend(`💬 **${user}**: ${message}`)
-
     const raw = message.trim()
     const msg = raw.toLowerCase()
     const low = msg.split(' ')
@@ -2988,7 +2908,6 @@ help         → args:[]                          — помощь
 
   bot.on('death', () => {
     console.log('💀 Умер')
-    dcEmbed('💀 Бот умер', 'Возрождение...', 0xe74c3c)
     isDead = true
     // Сбрасываем ВСЁ
     MODE = null; modeMeta = {}
@@ -3010,8 +2929,8 @@ help         → args:[]                          — помощь
     setTimeout(() => applyMovements(), 500)
   })
   bot.on('error',  e  => console.error('❌', e.message))
-  bot.on('kicked', r  => { console.log('🔴 Кик:', r); dcEmbed('🔴 Бот кикнут', String(r).slice(0, 500), 0xe74c3c) })
-  bot.on('end',    () => { restoreDoorBoundingBoxes(); activeMcBot = null; dcSend('🔌 Потеряно соединение — реконнект через 5с...'); console.log('🔌 Реконнект 5с...'); setTimeout(createBot, 5000) })
+  bot.on('kicked', r  => console.log('🔴 Кик:', r))
+  bot.on('end',    () => { restoreDoorBoundingBoxes(); console.log('🔌 Реконнект 5с...'); setTimeout(createBot, 5000) })
 
   process.stdin.removeAllListeners('data')
   process.stdin.on('data', d => { const t = d.toString().trim(); if (t) bot.chat(t) })
