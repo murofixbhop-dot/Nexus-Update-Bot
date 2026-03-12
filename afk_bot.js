@@ -369,8 +369,36 @@ help         → args:[]                          — помощь
   bot.on('spawn', () => {
     console.log('✅ Бот подключился! Режим: ' + behaviorMode)
     S({ t: 'spawned', pos: bot.entity?.position, username: bot.username })
-    setTimeout(() => { applyMovements() }, 500)
-    setTimeout(() => { if (autoArmor) equipBestArmor() }, 3000)
+
+    // ── Анти-бот: после спавна крутим голову и делаем шаг вперёд ──────────
+    setTimeout(async () => {
+      try {
+        // Покачать головой вверх-вниз 3 раза
+        for (let i = 0; i < 3; i++) {
+          await bot.look(bot.entity.yaw, -0.6, false)  // вверх
+          await new Promise(r => setTimeout(r, 180))
+          await bot.look(bot.entity.yaw, 0.4, false)   // вниз
+          await new Promise(r => setTimeout(r, 180))
+        }
+        await bot.look(bot.entity.yaw, 0, false)        // прямо
+
+        // Шаг вперёд 1 секунду
+        bot.setControlState('forward', true)
+        await new Promise(r => setTimeout(r, 1000))
+        bot.setControlState('forward', false)
+
+        // Поворот головы влево-вправо
+        const baseYaw = bot.entity.yaw
+        await bot.look(baseYaw - 0.5, 0, false)
+        await new Promise(r => setTimeout(r, 200))
+        await bot.look(baseYaw + 0.5, 0, false)
+        await new Promise(r => setTimeout(r, 200))
+        await bot.look(baseYaw, 0, false)
+      } catch (e) { console.log('[spawn-anticheat]', e.message) }
+    }, 600)
+
+    setTimeout(() => { applyMovements() }, 3000)
+    setTimeout(() => { if (autoArmor) equipBestArmor() }, 4000)
   })
 
   // Список имён дверей и калиток
@@ -2935,7 +2963,31 @@ help         → args:[]                          — помощь
     setTimeout(() => applyMovements(), 500)
   })
   bot.on('error',  e  => { console.error('❌', e.message); S({ t: 'error', msg: e.message }) })
-  bot.on('kicked', r  => { console.log('🔴 Кик:', r); S({ t: 'kicked', reason: String(r) }) })
+  bot.on('kicked', r => {
+    console.log('🔴 Кик:', r)
+    // Извлекаем читаемый текст из kick reason (может быть JSON объект или строка)
+    function extractKickText(reason) {
+      if (!reason) return 'неизвестно'
+      if (typeof reason === 'string') {
+        try { reason = JSON.parse(reason) } catch(e) { return reason }
+      }
+      if (typeof reason === 'object') {
+        // Рекурсивно собираем text поля
+        function getText(obj) {
+          if (!obj) return ''
+          if (typeof obj === 'string') return obj
+          let result = obj.text || ''
+          if (Array.isArray(obj.extra)) result += obj.extra.map(getText).join('')
+          if (Array.isArray(obj)) result = obj.map(getText).join('')
+          return result
+        }
+        return getText(reason).replace(/\s+/g, ' ').trim() || JSON.stringify(reason).slice(0, 200)
+      }
+      return String(reason)
+    }
+    const text = extractKickText(r)
+    S({ t: 'kicked', reason: text })
+  })
   bot.on('end',    () => { restoreDoorBoundingBoxes(); console.log('🔌 Реконнект 5с...'); S({ t: 'end' }); setTimeout(createBot, 5000) })
 
   // ── STDIN обработчик (команды из Discord) ──────────────────────────────
