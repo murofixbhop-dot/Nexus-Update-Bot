@@ -737,6 +737,7 @@ class MCBotManager:
     def __init__(self):
         self._proc     = None
         self.connected = False
+        self._disconnect_time = 0
         self.health    = 20
         self.food      = 20
         self.pos       = None
@@ -808,6 +809,7 @@ class MCBotManager:
 
                     elif t == "death":
                         self.connected = False
+                        self._disconnect_time = time.time()
                         self._notify("💀 **Бот умер!** Ожидаю возрождения...")
 
                     elif t == "respawn":
@@ -816,11 +818,13 @@ class MCBotManager:
 
                     elif t == "kicked":
                         self.connected = False
+                        self._disconnect_time = time.time()
                         reason = m.get("reason", "?")
                         self._notify(f"🔴 **Бот кикнут!** Причина: `{reason[:200]}`")
 
                     elif t == "end":
                         self.connected = False
+                        self._disconnect_time = time.time()
                         self._notify("🔌 **Соединение потеряно.** Реконнект через 5с...")
 
                     elif t == "error":
@@ -1927,7 +1931,12 @@ class MCPanelView(discord.ui.View):
         await i.response.send_message("❌ Только для Owner.", ephemeral=True)
 
     def _need_bot(self, i):
-        return not mc_bot.connected
+        if mc_bot.connected:
+            return False
+        # Grace период 8с после дисконнекта — бот реконнектится сам
+        if time.time() - mc_bot._disconnect_time < 8:
+            return False
+        return True
 
     # ══ ROW 0 — Подключение ══════════════════════════════════════════════════
     @discord.ui.button(label="▶ Запустить", style=discord.ButtonStyle.success, custom_id="mc_start", emoji="🚀", row=0)
