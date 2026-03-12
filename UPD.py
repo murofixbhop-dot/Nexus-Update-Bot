@@ -759,7 +759,7 @@ class MCBotManager:
                "HF_TOKEN":     os.getenv("HF_TOKEN", "")}
         try:
             self._proc = subprocess.Popen(
-                ["node", "afk_bot.js", host, str(port)],
+                ["node", "afk_bot.js", host, str(port), user, ver],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, env=env, text=True, bufsize=1)
             threading.Thread(target=self._read, daemon=True).start()
@@ -2706,4 +2706,3 @@ async def mcpanel(ctx):
 if __name__ == "__main__":
     Thread(target=run_flask).start()
     bot.run(TOKEN)
-
