@@ -364,8 +364,11 @@ help         → args:[]                          — помощь
   // ════════════════════════════════════════════════════════════════
   bot.on('inject_allowed', () => { mcData = require('minecraft-data')(bot.version) })
 
+  const S = o => { try { process.stdout.write(JSON.stringify(o) + '\n') } catch(e) {} }
+
   bot.on('spawn', () => {
     console.log('✅ Бот подключился! Режим: ' + behaviorMode)
+    S({ t: 'spawned', pos: bot.entity?.position, username: bot.username })
     setTimeout(() => { applyMovements() }, 500)
     setTimeout(() => { if (autoArmor) equipBestArmor() }, 3000)
   })
@@ -2842,6 +2845,7 @@ help         → args:[]                          — помощь
   //  СОБЫТИЯ
   // ════════════════════════════════════════════════════════════════
   bot.on('health', () => {
+    S({ t: 'health', health: bot.health, food: bot.food })
     if (bot.health <= 4 && !eatingNow) {
       const food = bot.inventory.items().find(i => isFood(i.name))
       if (food) {
@@ -2908,6 +2912,7 @@ help         → args:[]                          — помощь
 
   bot.on('death', () => {
     console.log('💀 Умер')
+    S({ t: 'death' })
     isDead = true
     // Сбрасываем ВСЁ
     MODE = null; modeMeta = {}
@@ -2929,8 +2934,8 @@ help         → args:[]                          — помощь
     setTimeout(() => applyMovements(), 500)
   })
   bot.on('error',  e  => console.error('❌', e.message))
-  bot.on('kicked', r  => console.log('🔴 Кик:', r))
-  bot.on('end',    () => { restoreDoorBoundingBoxes(); console.log('🔌 Реконнект 5с...'); setTimeout(createBot, 5000) })
+  bot.on('kicked', r  => { console.log('🔴 Кик:', r); S({ t: 'kicked', reason: String(r) }) })
+  bot.on('end',    () => { restoreDoorBoundingBoxes(); console.log('🔌 Реконнект 5с...'); S({ t: 'end' }); setTimeout(createBot, 5000) })
 
   process.stdin.removeAllListeners('data')
   process.stdin.on('data', d => { const t = d.toString().trim(); if (t) bot.chat(t) })
