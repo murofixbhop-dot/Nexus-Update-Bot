@@ -759,7 +759,7 @@ class MCBotManager:
                "HF_TOKEN":     os.getenv("HF_TOKEN", "")}
         try:
             self._proc = subprocess.Popen(
-                ["node", "afk_bot.js", host, str(port), user, ver],
+                ["node", "afk_bot.js", host, str(port)],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, env=env, text=True, bufsize=1)
             threading.Thread(target=self._read, daemon=True).start()
@@ -1824,25 +1824,6 @@ class MCJoinModal(discord.ui.Modal, title="🔌 Подключить MC бота
         )
 
 
-
-class MCChatModal(discord.ui.Modal, title="💬 Написать в MC чат"):
-    text = discord.ui.TextInput(
-        label="Текст или команда",
-        placeholder="/reg 123 123  или  /login 123  или  Привет всем!",
-        style=discord.TextStyle.short,
-        required=True, max_length=256
-    )
-
-    async def on_submit(self, interaction: discord.Interaction):
-        line = self.text.value.strip()
-        if not line:
-            await interaction.response.send_message("❌ Пусто.", ephemeral=True); return
-        await interaction.response.defer(ephemeral=True)
-        if not mc_bot.connected:
-            await interaction.followup.send("❌ Бот не на сервере.", ephemeral=True); return
-        mc_bot.send(line)
-        await interaction.followup.send(f"✅ Отправлено: `{line[:100]}`", ephemeral=True)
-
 class MCPanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -1857,36 +1838,68 @@ class MCPanelView(discord.ui.View):
         return not mc_bot.connected
 
     # ══ ROW 0 — Подключение ══════════════════════════════════════════════════
-    @discord.ui.button(label="🔌 Подключить", style=discord.ButtonStyle.success, custom_id="mc_join_btn", row=0)
+    @discord.ui.button(label="▶ Запустить", style=discord.ButtonStyle.success, custom_id="mc_start", emoji="🚀", row=0)
+    async def btn_start(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self._is_owner(interaction): return await self._deny(interaction)
+        # Если логин/пароль заданы в env — запускаем сразу, иначе открываем модалку
+        if ATERNOS_USER and ATERNOS_PASS:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            res = await aternos_mgr.start(ATERNOS_USER, ATERNOS_PASS)
+            await interaction.followup.send(res, ephemeral=True)
+            if "✅" in res and MC_SERVER:
+                await asyncio.sleep(3)
+                ok = mc_bot.start(MC_SERVER, MC_PORT_NUM, MC_USERNAME, MC_VERSION)
+                if not ok:
+                    await interaction.followup.send("❌ Node.js не найден.", ephemeral=True); return
+                for _ in range(20):
+                    await asyncio.sleep(2)
+                    if mc_bot.connected:
+                        await interaction.followup.send(f"✅ Зашёл как **{MC_USERNAME}**!", ephemeral=True); return
+                await interaction.followup.send("⏳ Бот запущен, жду спавн...", ephemeral=True)
+        else:
+            # Открываем модальное окно для ввода логина/пароля/адреса
+            modal = AternosStartModal()
+            if MC_SERVER:
+                modal.mc_addr.default = MC_SERVER
+            await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="⏹ Стоп", style=discord.ButtonStyle.danger, custom_id="mc_stop", emoji="🛑", row=0)
+    async def btn_stop(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self._is_owner(interaction): return await self._deny(interaction)
+        await interaction.response.defer(ephemeral=True)
+        mc_bot.stop()
+        res = await aternos_mgr.stop_server()
+        await interaction.followup.send(f"👋 Бот отключён. Aternos: {res}", ephemeral=True)
+
+    @discord.ui.button(label="🔄 Рестарт", style=discord.ButtonStyle.secondary, custom_id="mc_restart_btn", emoji="🔄", row=0)
+    async def btn_restart(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self._is_owner(interaction): return await self._deny(interaction)
+        await interaction.response.defer(ephemeral=True)
+        res = await aternos_mgr.restart()
+        await interaction.followup.send(res, ephemeral=True)
+
+    @discord.ui.button(label="🔌 Подключить", style=discord.ButtonStyle.primary, custom_id="mc_join_btn", emoji="🔌", row=0)
     async def btn_join(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self._is_owner(interaction): return await self._deny(interaction)
+        # Открываем модальное окно для ввода адреса/версии/ника
         modal = MCJoinModal()
         modal.server_addr.default = MC_SERVER or ""
         modal.mc_version.default  = MC_VERSION
         modal.mc_user.default     = MC_USERNAME
         await interaction.response.send_modal(modal)
 
-    @discord.ui.button(label="🛑 Отключить", style=discord.ButtonStyle.danger, custom_id="mc_stop_btn", row=0)
-    async def btn_stop(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self._is_owner(interaction): return await self._deny(interaction)
-        await interaction.response.defer(ephemeral=True)
-        mc_bot.stop()
-        await interaction.followup.send("👋 Бот отключён от сервера.", ephemeral=True)
-
-    @discord.ui.button(label="💬 Чат / Команда", style=discord.ButtonStyle.primary, custom_id="mc_chat_btn", row=0)
-    async def btn_chat(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self._is_owner(interaction): return await self._deny(interaction)
-        await interaction.response.send_modal(MCChatModal())
-
-    @discord.ui.button(label="📊 Статус", style=discord.ButtonStyle.secondary, custom_id="mc_status_btn", row=0)
+    @discord.ui.button(label="📊 Статус", style=discord.ButtonStyle.secondary, custom_id="mc_status_btn", emoji="📊", row=0)
     async def btn_status(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self._is_owner(interaction): return await self._deny(interaction)
         await interaction.response.defer(ephemeral=True)
+        st_a = await aternos_mgr.get_status()
+        ic   = {"online":"🟢","starting":"🟡","queue":"🟠","stopping":"🔴","offline":"⚫","unknown":"⚪"}
         beh_emoji = {"мирный":"🕊️","защита":"🛡️","агрессия":"⚔️"}.get(mc_bot.behavior,"❓")
         embed = discord.Embed(title="📊 Minecraft Status", color=0x2ecc71 if mc_bot.connected else 0xe74c3c)
-        embed.add_field(name="MC Бот",     value=f"{'✅ Online' if mc_bot.connected else '❌ Offline'}",  inline=True)
-        embed.add_field(name="❤️ HP / 🍖", value=f"`{mc_bot.health}/20` / `{mc_bot.food}/20`",          inline=True)
-        embed.add_field(name="📍 Позиция", value=f"`{mc_bot.pos}`" if mc_bot.pos else "*неизвестно*",   inline=False)
+        embed.add_field(name="Aternos",    value=f"{ic.get(st_a,'⚪')} `{st_a}`",                                        inline=True)
+        embed.add_field(name="MC Бот",     value=f"{'✅ Online' if mc_bot.connected else '❌ Offline'}",                  inline=True)
+        embed.add_field(name="❤️ HP / 🍖", value=f"`{mc_bot.health}/20` / `{mc_bot.food}/20`",                          inline=True)
+        embed.add_field(name="📍 Позиция", value=f"`{mc_bot.pos}`" if mc_bot.pos else "*неизвестно*",                   inline=False)
         features_line = (
             ("🟢" if mc_bot.afk else "🔴") + " АФК  " +
             ("🟢" if mc_bot.anti_afk else "🔴") + " Анти-АФК  " +
@@ -1943,17 +1956,17 @@ class MCPanelView(discord.ui.View):
         await interaction.response.send_message(f"{emoji} Режим: **{nxt}**", ephemeral=True)
 
     # ══ ROW 2 — Движение ═════════════════════════════════════════════════════
-    @discord.ui.button(label="⬆️", style=discord.ButtonStyle.secondary, custom_id="mc_fwd", row=2)
+    @discord.ui.button(label="⬆️", style=discord.ButtonStyle.secondary, custom_id="mc_fwd",  row=2)
     async def btn_fwd(self, interaction, button):
         if not self._is_owner(interaction): return await self._deny(interaction)
         if self._need_bot(interaction): return await interaction.response.send_message("❌ Не на сервере.", ephemeral=True)
-        mc_bot.send("!бег"); await interaction.response.send_message("⬆️ Вперёд!", ephemeral=True)
+        mc_bot.send("!run"); await interaction.response.send_message("⬆️ Вперёд!", ephemeral=True)
 
     @discord.ui.button(label="⬇️", style=discord.ButtonStyle.secondary, custom_id="mc_back", row=2)
     async def btn_back(self, interaction, button):
         if not self._is_owner(interaction): return await self._deny(interaction)
         if self._need_bot(interaction): return await interaction.response.send_message("❌ Не на сервере.", ephemeral=True)
-        mc_bot.send("!стоп"); await interaction.response.send_message("⬇️ Стоп!", ephemeral=True)
+        mc_bot.send("!back"); await interaction.response.send_message("⬇️ Назад!", ephemeral=True)
 
     @discord.ui.button(label="🐰 Прыжок", style=discord.ButtonStyle.secondary, custom_id="mc_jump_btn", row=2)
     async def btn_jump(self, interaction, button):
@@ -1984,7 +1997,7 @@ class MCPanelView(discord.ui.View):
     async def btn_eat(self, interaction, button):
         if not self._is_owner(interaction): return await self._deny(interaction)
         if self._need_bot(interaction): return await interaction.response.send_message("❌ Не на сервере.", ephemeral=True)
-        mc_bot.send("!ешь"); await interaction.response.send_message("😋 Ем!", ephemeral=True)
+        mc_bot.send("!поешь"); await interaction.response.send_message("😋 Ем!", ephemeral=True)
 
     @discord.ui.button(label="🎒 Инвентарь", style=discord.ButtonStyle.secondary, custom_id="mc_inv_btn", row=3)
     async def btn_inv(self, interaction, button):
@@ -1997,16 +2010,16 @@ class MCPanelView(discord.ui.View):
         if not self._is_owner(interaction): return await self._deny(interaction)
         if self._need_bot(interaction): return await interaction.response.send_message("❌ Не на сервере.", ephemeral=True)
         mc_bot.send("!хп")
-        await interaction.response.send_message(f"❤️ `{mc_bot.health}/20`  🍖 `{mc_bot.food}/20`", ephemeral=True)
+        await interaction.response.send_message(
+            f"❤️ `{mc_bot.health}/20`  🍖 `{mc_bot.food}/20`", ephemeral=True)
 
     @discord.ui.button(label="📍 Где я", style=discord.ButtonStyle.secondary, custom_id="mc_pos_btn", row=3)
     async def btn_pos(self, interaction, button):
         if not self._is_owner(interaction): return await self._deny(interaction)
         if self._need_bot(interaction): return await interaction.response.send_message("❌ Не на сервере.", ephemeral=True)
         mc_bot.send("!где")
-        await interaction.response.send_message(f"📍 `{mc_bot.pos}`" if mc_bot.pos else "📍 Позиция неизвестна", ephemeral=True)
-
-
+        await interaction.response.send_message(
+            f"📍 `{mc_bot.pos}`" if mc_bot.pos else "📍 Позиция неизвестна", ephemeral=True)
 
 
 async def ensure_mc_panel(channel):
@@ -2015,10 +2028,11 @@ async def ensure_mc_panel(channel):
     if panel_id:
         try:
             await channel.fetch_message(panel_id)
-            return
+            return  # уже существует
         except:
             db_set("mc_panel_msg_id", None)
 
+    # Ищем старую панель
     async for msg in channel.history(limit=30):
         if msg.author == bot.user and msg.embeds:
             t = msg.embeds[0].title or ""
@@ -2028,7 +2042,7 @@ async def ensure_mc_panel(channel):
     mc_server_display = MC_SERVER or "*не задан — добавь MC_SERVER в env vars*"
     desc = (
         "**ROW 1 — Подключение:**\n"
-        "🔌 Подключить  |  🛑 Отключить  |  💬 Чат/Команда  |  📊 Статус\n\n"
+        "🚀 Запустить Aternos + зайти  |  🛑 Стоп всё  |  🔌 Только зайти в MC  |  📊 Статус\n\n"
         "**ROW 2 — Функции:**\n"
         "💤 АФК  |  🤖 Анти-АФК  |  🍖 Автоеда  |  🛡️ Автоброня  |  ⚔️ Режим\n\n"
         "**ROW 3 — Движение:**\n"
@@ -2036,10 +2050,13 @@ async def ensure_mc_panel(channel):
         "**ROW 4 — Действия:**\n"
         "😴 Спать  |  🍖 Поесть  |  🎒 Инвентарь  |  ❤️ HP  |  📍 Где я\n\n"
         "**Текстовые команды:**\n"
-        "`!join адрес[:порт] [версия] [ник]`  |  `!leave`  |  `!status`\n"
-        "`!say текст` — написать в MC чат  |  `!стоп !афк !антиафк` и т.д."
+        "`!say текст` — в MC чат  |  `!join адрес`  |  `!leave`  |  `!mchelp`"
     )
-    embed = discord.Embed(title="🎮 Minecraft Control Panel", description=desc, color=0x00b4d8)
+    embed = discord.Embed(
+        title="🎮 Minecraft Control Panel",
+        description=desc,
+        color=0x00b4d8
+    )
     embed.add_field(name="🌐 Сервер",    value=f"`{mc_server_display}`", inline=True)
     embed.add_field(name="🤖 Ник бота", value=f"`{MC_USERNAME}`",        inline=True)
     embed.set_footer(text="Nexus Core | Minecraft System")
@@ -2216,6 +2233,18 @@ async def on_message(message):
             if not _chk(): await message.channel.send("❌ Бот не на сервере."); return
             mc_bot.send(args_raw or "Привет!")
             await message.channel.send(f"💬 Написал: `{(args_raw or "Привет!")[:80]}`")
+            return
+
+        # !mcpanel — пересоздать панель (обрабатываем ДО passthrough)
+        if cmd == "mcpanel":
+            panel_id = db_get("mc_panel_msg_id")
+            if panel_id:
+                try:
+                    old_msg = await message.channel.fetch_message(panel_id)
+                    await old_msg.delete()
+                except: pass
+                db_set("mc_panel_msg_id", None)
+            await ensure_mc_panel(message.channel)
             return
 
         # Любая !команда бота afk_bot.js — пересылаем напрямую
