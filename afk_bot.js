@@ -231,7 +231,11 @@ process.stdout.on('error', e => {
 
 function createBot () {
   const bot = mineflayer.createBot({
-    host: HOST, port: PORT, username: USERNAME, version: VERSION
+    host: HOST, port: PORT, username: USERNAME, version: VERSION,
+    hideErrors: false,          // показываем ошибки в лог
+    checkTimeoutInterval: 30000, // таймаут пинга 30с (дефолт 10с)
+    // Отключаем физику на стороне клиента — меньше пакетов, меньше ошибок декодирования
+    physicsEnabled: true,
   })
   bot.loadPlugin(pathfinder)
   bot.loadPlugin(collectPlugin)
@@ -3024,6 +3028,14 @@ help         → args:[]                          — помощь
     const ignore = ['EPIPE', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT']
     if (ignore.some(code => e.message.includes(code) || e.code === code)) {
       console.log('[net] ' + e.message + ' (ignored)')
+      return
+    }
+    // Ошибки декодирования пакетов — кастомный сервер/протокол
+    const isPacketErr = e.message.includes('VarInt') || e.message.includes('DecoderException') ||
+      e.message.includes('PacketException') || e.message.includes('Bad packet')
+    if (isPacketErr) {
+      console.log('[packet] ' + e.message.slice(0, 100))
+      S({ t: 'error', msg: '⚠️ Ошибка пакета (кастомный протокол сервера): ' + e.message.slice(0, 150) })
       return
     }
     console.error('❌', e.message)
