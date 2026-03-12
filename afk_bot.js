@@ -2372,10 +2372,8 @@ help         → args:[]                          — помощь
   }
 
   // ════════════════════════════════════════════════════════════════
-  //  ОБРАБОТЧИК ЧАТА + stdin команды
+  //  ОБРАБОТЧИК ЧАТА + handleBotCmd для stdin
   // ════════════════════════════════════════════════════════════════
-
-  // Вызывается и из bot.on('chat') и из stdin
   async function handleBotCmd (msg, raw, tok) {
     const low = msg.split(' ')
 
@@ -2826,18 +2824,16 @@ help         → args:[]                          — помощь
     if (msg === '!помощь' || msg === '!команды') { await showHelp(); return }
   }
 
-  // Обработчик MC чата — вызывает handleBotCmd только для ! команд и AI
   bot.on('chat', async (user, message) => {
     if (user === bot.username) return
     lastCmdTime = Date.now()
+    S({ t: 'mc_chat', user, text: message })
     const raw = message.trim()
     const msg = raw.toLowerCase()
     const tok = raw.split(' ')
-    // ИИ — если начинается с "ai ", "ии ", "аи "
     if (!raw.startsWith('!')) {
       const aiPrefixes = ['ai ', 'ии ', 'аи ', 'ai,', 'ии,', 'аи,']
-      const hasPrefix = aiPrefixes.some(p => msg.startsWith(p))
-      if (!hasPrefix) return
+      if (!aiPrefixes.some(p => msg.startsWith(p))) return
       const query = raw.slice(raw.indexOf(' ') + 1).trim()
       if (query) await handleAiMessage(user, query)
       return
@@ -2931,13 +2927,14 @@ help         → args:[]                          — помощь
   // Возрождение — сбрасываем флаг и восстанавливаем движения
   bot.on('respawn', () => {
     console.log('♻️ Возродился')
+    S({ t: 'respawn' })
     isDead = false
     MODE = null; modeMeta = {}
     combatTarget = null
     try { bot.pathfinder.setGoal(null) } catch (_) {}
     setTimeout(() => applyMovements(), 500)
   })
-  bot.on('error',  e  => console.error('❌', e.message))
+  bot.on('error',  e  => { console.error('❌', e.message); S({ t: 'error', msg: e.message }) })
   bot.on('kicked', r  => { console.log('🔴 Кик:', r); S({ t: 'kicked', reason: String(r) }) })
   bot.on('end',    () => { restoreDoorBoundingBoxes(); console.log('🔌 Реконнект 5с...'); S({ t: 'end' }); setTimeout(createBot, 5000) })
 
@@ -2964,11 +2961,11 @@ help         → args:[]                          — помощь
       S({ t: 'chat_sent', text: line })
       return
     }
-    // !команда — через тот же обработчик что и MC чат
+    // !команда — через handleBotCmd
     if (line.startsWith('!')) {
-      const fakeChatHandler = async (user, message) => {}
-      // Эмулируем chat event — вызываем логику напрямую
-      handleBotCmd(line.toLowerCase(), line, line.split(' '))
+      const msg = line.toLowerCase()
+      const tok = line.split(' ')
+      handleBotCmd(msg, line, tok).catch(() => {})
       return
     }
     // Просто текст — отправить в MC чат
