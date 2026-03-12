@@ -740,15 +740,16 @@ class MCBotManager:
         self.health    = 20
         self.food      = 20
         self.pos       = None
-        # Локальные состояния переключаемых функций afk_bot.js
+        self.host      = ""
+        self.username  = ""
         self.afk        = False
         self.anti_afk   = False
         self.auto_eat   = False
         self.auto_armor = True
-        self.behavior   = "защита"  # мирный / защита / агрессия
+        self.behavior   = "защита"
+        self._discord_loop = None   # asyncio loop для отправки в Discord
 
     def start(self, host, port, user, ver):
-        """Запускаем afk_bot.js напрямую (host/port через argv)."""
         env = {**os.environ,
                "MC_HOST": host, "MC_PORT": str(port),
                "MC_USER": user, "MC_VERSION": ver,
@@ -757,9 +758,10 @@ class MCBotManager:
                "CEREBRAS_KEY": os.getenv("CEREBRAS_KEY", ""),
                "MISTRAL_KEY":  os.getenv("MISTRAL_KEY", ""),
                "HF_TOKEN":     os.getenv("HF_TOKEN", "")}
+        self.host = host; self.username = user
         try:
             self._proc = subprocess.Popen(
-                ["node", "afk_bot.js", host, str(port)],
+                ["node", "afk_bot.js", host, str(port), user, ver],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, env=env, text=True, bufsize=1)
             threading.Thread(target=self._read, daemon=True).start()
@@ -769,26 +771,92 @@ class MCBotManager:
         except Exception as e:
             print(f"[MC] start error: {e}"); return False
 
+    def _notify(self, text: str):
+        """Отправить уведомление в MC канал Discord."""
+        loop = self._discord_loop
+        if loop and not loop.is_closed():
+            async def _send():
+                ch = bot.get_channel(MC_CHANNEL_ID)
+                if ch:
+                    try: await ch.send(text)
+                    except: pass
+            asyncio.run_coroutine_threadsafe(_send(), loop)
+
     def _read(self):
-        """Читает stdout afk_bot.js. JSON-строки — статус, остальное — лог."""
+        """Читает stdout afk_bot.js и шлёт события в Discord."""
         for raw_line in self._proc.stdout:
             line = raw_line.strip()
-            if not line:
-                continue
+            if not line: continue
             if line.startswith('{'):
                 try:
                     m = json.loads(line)
                     t = m.get("t")
-                    if   t == "spawned": self.connected = True;  self.pos = m.get("pos")
-                    elif t == "health":  self.health = m.get("health", 20); self.food = m.get("food", 20)
-                    elif t in ("kicked", "end", "death"): self.connected = False
-                except:
-                    pass
+
+                    if t == "spawned":
+                        self.connected = True
+                        self.pos = m.get("pos")
+                        pos = self.pos
+                        pos_str = f"`{pos['x']:.0f} {pos['y']:.0f} {pos['z']:.0f}`" if pos else "?"
+                        self._notify(f"✅ **{self.username}** зашёл на `{self.host}` | Позиция: {pos_str}")
+
+                    elif t == "health":
+                        self.health = m.get("health", 20)
+                        self.food   = m.get("food", 20)
+                        # Уведомляем только при низком HP
+                        if self.health <= 6:
+                            self._notify(f"⚠️ Низкое HP: ❤️ `{self.health}/20` 🍖 `{self.food}/20`")
+
+                    elif t == "death":
+                        self.connected = False
+                        self._notify("💀 **Бот умер!** Ожидаю возрождения...")
+
+                    elif t == "respawn":
+                        self.connected = True
+                        self._notify("♻️ **Бот возродился**")
+
+                    elif t == "kicked":
+                        self.connected = False
+                        reason = m.get("reason", "?")
+                        self._notify(f"🔴 **Бот кикнут!** Причина: `{reason[:200]}`")
+
+                    elif t == "end":
+                        self.connected = False
+                        self._notify("🔌 **Соединение потеряно.** Реконнект через 5с...")
+
+                    elif t == "error":
+                        self._notify(f"❌ **Ошибка:** `{m.get('msg','?')[:200]}`")
+
+                    elif t == "mc_chat":
+                        user = m.get("user", "?")
+                        text = m.get("text", "")
+                        # Только важные сообщения — авторизация, команды серверов, системные
+                        lower = text.lower()
+                        is_system = any(x in lower for x in [
+                            "зарегистрир", "вошли", "войдите", "зайдите", "register",
+                            "login", "logged", "welcome", "добро пожаловать",
+                            "incorrect password", "неверный пароль", "already logged",
+                            "you are already", "вы уже", "kicked", "banned",
+                            "whitelist", "вайтлист", "not whitelisted",
+                        ])
+                        if is_system or user.startswith("["):
+                            self._notify(f"💬 **[MC чат]** `{user}`: {text[:200]}")
+
+                    elif t == "chat_sent":
+                        self._notify(f"📤 **Отправлено в MC:** `{m.get('text','')[:200]}`")
+
+                except Exception as e:
+                    print(f"[MC JSON parse] {e}: {line[:100]}")
             else:
                 print(f"[MC] {line}")
+                # Важные строки из консоли — тоже шлём в Discord
+                important = any(x in line.lower() for x in [
+                    "error", "ошибка", "failed", "cannot", "unable",
+                    "connect", "disconnect", "timeout", "kicked",
+                ])
+                if important:
+                    self._notify(f"📋 `{line[:200]}`")
 
     def send(self, text: str) -> bool:
-        """Отправить строку в stdin afk_bot.js (он слушает process.stdin)."""
         if not self._proc or self._proc.poll() is not None: return False
         try:
             self._proc.stdin.write(text.rstrip("\n") + "\n")
@@ -796,7 +864,6 @@ class MCBotManager:
         except: return False
 
     def cmd(self, c, **kw):
-        """Совместимость со старым кодом: отправить JSON-команду (для simple _MC_JS)."""
         return self.send(json.dumps({"cmd": c, **kw}))
 
     def stop(self):
@@ -1824,6 +1891,25 @@ class MCJoinModal(discord.ui.Modal, title="🔌 Подключить MC бота
         )
 
 
+
+class MCChatModal(discord.ui.Modal, title="💬 Написать в MC / Команда"):
+    text = discord.ui.TextInput(
+        label="Текст или команда",
+        placeholder="/reg 123 123  |  /login 123  |  Привет!  |  !стоп",
+        style=discord.TextStyle.short,
+        required=True, max_length=256
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        line = self.text.value.strip()
+        if not line:
+            await interaction.response.send_message("❌ Пусто.", ephemeral=True); return
+        await interaction.response.defer(ephemeral=True)
+        if not mc_bot.connected:
+            await interaction.followup.send("❌ Бот не на сервере.", ephemeral=True); return
+        mc_bot.send(line)
+        await interaction.followup.send(f"✅ Отправлено: `{line[:100]}`", ephemeral=True)
+
 class MCPanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -1863,20 +1949,17 @@ class MCPanelView(discord.ui.View):
                 modal.mc_addr.default = MC_SERVER
             await interaction.response.send_modal(modal)
 
-    @discord.ui.button(label="⏹ Стоп", style=discord.ButtonStyle.danger, custom_id="mc_stop", emoji="🛑", row=0)
+    @discord.ui.button(label="🛑 Отключить", style=discord.ButtonStyle.danger, custom_id="mc_stop", emoji="🛑", row=0)
     async def btn_stop(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self._is_owner(interaction): return await self._deny(interaction)
         await interaction.response.defer(ephemeral=True)
         mc_bot.stop()
-        res = await aternos_mgr.stop_server()
-        await interaction.followup.send(f"👋 Бот отключён. Aternos: {res}", ephemeral=True)
+        await interaction.followup.send("👋 Бот отключён от сервера.", ephemeral=True)
 
-    @discord.ui.button(label="🔄 Рестарт", style=discord.ButtonStyle.secondary, custom_id="mc_restart_btn", emoji="🔄", row=0)
-    async def btn_restart(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="💬 Чат", style=discord.ButtonStyle.primary, custom_id="mc_chat_btn", emoji="💬", row=0)
+    async def btn_chat(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self._is_owner(interaction): return await self._deny(interaction)
-        await interaction.response.defer(ephemeral=True)
-        res = await aternos_mgr.restart()
-        await interaction.followup.send(res, ephemeral=True)
+        await interaction.response.send_modal(MCChatModal())
 
     @discord.ui.button(label="🔌 Подключить", style=discord.ButtonStyle.primary, custom_id="mc_join_btn", emoji="🔌", row=0)
     async def btn_join(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -2233,18 +2316,6 @@ async def on_message(message):
             if not _chk(): await message.channel.send("❌ Бот не на сервере."); return
             mc_bot.send(args_raw or "Привет!")
             await message.channel.send(f"💬 Написал: `{(args_raw or "Привет!")[:80]}`")
-            return
-
-        # !mcpanel — пересоздать панель (обрабатываем ДО passthrough)
-        if cmd == "mcpanel":
-            panel_id = db_get("mc_panel_msg_id")
-            if panel_id:
-                try:
-                    old_msg = await message.channel.fetch_message(panel_id)
-                    await old_msg.delete()
-                except: pass
-                db_set("mc_panel_msg_id", None)
-            await ensure_mc_panel(message.channel)
             return
 
         # Любая !команда бота afk_bot.js — пересылаем напрямую
@@ -2685,6 +2756,7 @@ async def monthly_token_refill():
 @bot.event
 async def on_ready():
     print(f'✅ Nexus Core System Ready | User: {bot.user}')
+    mc_bot._discord_loop = asyncio.get_event_loop()
     bot.add_view(HistoryView())
     bot.add_view(RoleView())
     bot.add_view(AIPanelView())
