@@ -23,7 +23,8 @@ const https         = require('https')
 const HOST    = process.argv[2] || process.env.MC_HOST    || 'jorjinaplay.aternos.me'
 const PORT    = parseInt(process.argv[3] || process.env.MC_PORT  || '20942')
 const USERNAME = process.argv[4] || process.env.MC_USER    || 'AI_Guardian'
-const VERSION  = process.argv[5] || process.env.MC_VERSION || false
+const _verRaw  = process.argv[5] || process.env.MC_VERSION || 'auto'
+const VERSION  = (_verRaw === 'auto' || _verRaw === 'авто' || _verRaw === 'false' || _verRaw === '') ? false : _verRaw
 
 // ═══ API КЛЮЧИ (из env или вставь прямо сюда) ════════════════════
 const GROQ_KEY     = process.env.GROQ_KEY     || ''
