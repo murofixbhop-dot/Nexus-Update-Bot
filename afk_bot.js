@@ -2484,8 +2484,49 @@ help         → args:[]                          — помощь
       bot.chat(list.length ? '📍 ' + list.map(n => { const q = savedPoints[n]; return '"'+n+'"('+q.x.toFixed(0)+'/'+q.z.toFixed(0)+')' }).join(' ') : '📍 Нет.'); return
     }
     if (msg.startsWith('!иди ') && low[1]) {
-      const pt = savedPoints[low[1]]; if (!pt) return bot.chat('❌ "' + low[1] + '" нет!')
-      fullStop(); MODE = 'goto'; pfGo(new goals.GoalNear(pt.x, pt.y, pt.z, 2)); bot.chat('🏃 → "' + low[1] + '"'); return
+      const args = tok.slice(1)  // оригинальный регистр для ников
+      const rawArgs = msg.slice(5).trim()
+
+      // Парсим числа (поддержка дробных: 139.498 71 312.219)
+      const nums = rawArgs.split(/\s+/).map(n => parseFloat(n)).filter(n => !isNaN(n))
+
+      // 3 числа = X Y Z координаты
+      if (nums.length >= 3) {
+        const [x, y, z] = nums
+        fullStop(); MODE = 'goto'
+        pfGo(new goals.GoalBlock(Math.round(x), Math.round(y), Math.round(z)))
+        bot.chat('🏃 Иду на ' + x.toFixed(1) + ' ' + y.toFixed(1) + ' ' + z.toFixed(1))
+        return
+      }
+
+      // 2 числа = X Z (Y текущий)
+      if (nums.length === 2) {
+        const [x, z] = nums
+        fullStop(); MODE = 'goto'
+        pfGo(new goals.GoalXZ(Math.round(x), Math.round(z)))
+        bot.chat('🏃 Иду на X:' + x.toFixed(1) + ' Z:' + z.toFixed(1))
+        return
+      }
+
+      // Одно слово — ник игрока или сохранённая точка
+      const name = args[0]
+      // Сначала ищем в сохранённых точках
+      const pt = savedPoints[name.toLowerCase()]
+      if (pt) {
+        fullStop(); MODE = 'goto'; pfGo(new goals.GoalNear(pt.x, pt.y, pt.z, 2)); bot.chat('🏃 → "' + name + '"'); return
+      }
+      // Ищем игрока (регистронезависимо)
+      const player = Object.values(bot.entities).find(e =>
+        e.type === 'player' && e.username && e.username.toLowerCase() === name.toLowerCase()
+      )
+      if (player) {
+        fullStop(); MODE = 'goto'
+        pfGo(new goals.GoalNear(player.position.x, player.position.y, player.position.z, 2), true)
+        bot.chat('🏃 Иду к ' + player.username)
+        return
+      }
+      bot.chat('❌ Не нашёл "' + name + '" — нет такого игрока или точки')
+      return
     }
     if (msg.startsWith('!действие ') && low[1] && low[2]) {
       if (!savedPoints[low[1]]) return bot.chat('❌ "' + low[1] + '" нет!')
