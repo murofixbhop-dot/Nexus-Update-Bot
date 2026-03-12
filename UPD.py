@@ -828,7 +828,11 @@ class MCBotManager:
                         self._notify("🔌 **Соединение потеряно.** Реконнект через 5с...")
 
                     elif t == "error":
-                        self._notify(f"❌ **Ошибка:** `{m.get('msg','?')[:200]}`")
+                        msg_err = m.get('msg', '?')
+                        # EPIPE и сетевые ошибки — не спамим в Discord
+                        silent = any(x in msg_err for x in ['EPIPE', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT'])
+                        if not silent:
+                            self._notify(f"❌ **Ошибка:** `{msg_err[:200]}`")
 
                     elif t == "mc_chat":
                         user = m.get("user", "?")
@@ -858,10 +862,11 @@ class MCBotManager:
                     print(f"[MC JSON parse] {e}: {line[:100]}")
             else:
                 print(f"[MC] {line}")
-                # Важные строки из консоли — тоже шлём в Discord
-                important = any(x in line.lower() for x in [
+                # Важные строки из консоли — шлём в Discord (без EPIPE спама)
+                is_epipe = any(x in line for x in ['EPIPE', 'ECONNRESET', 'write EPIPE'])
+                important = not is_epipe and any(x in line.lower() for x in [
                     "error", "ошибка", "failed", "cannot", "unable",
-                    "connect", "disconnect", "timeout", "kicked",
+                    "timeout", "kicked",
                 ])
                 if important:
                     self._notify(f"📋 `{line[:200]}`")
@@ -870,8 +875,18 @@ class MCBotManager:
         if not self._proc or self._proc.poll() is not None: return False
         try:
             self._proc.stdin.write(text.rstrip("\n") + "\n")
-            self._proc.stdin.flush(); return True
-        except: return False
+            self._proc.stdin.flush()
+            return True
+        except BrokenPipeError:
+            # EPIPE — процесс переключился на другой сервер, это нормально
+            return False
+        except OSError as e:
+            if e.errno == 32:  # EPIPE
+                return False
+            print(f"[MC] send error: {e}")
+            return False
+        except Exception:
+            return False
 
     def cmd(self, c, **kw):
         return self.send(json.dumps({"cmd": c, **kw}))
