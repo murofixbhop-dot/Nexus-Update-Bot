@@ -3037,16 +3037,29 @@ help         → args:[]                          — помощь
         try { reason = JSON.parse(reason) } catch(e) { return reason }
       }
       if (typeof reason === 'object') {
-        // Рекурсивно собираем text поля
-        function getText(obj) {
+        // Поддержка NBT формата: { type: 'compound', value: { text: { type: 'string', value: '...' } } }
+        function getNbt(obj) {
           if (!obj) return ''
           if (typeof obj === 'string') return obj
-          let result = obj.text || ''
-          if (Array.isArray(obj.extra)) result += obj.extra.map(getText).join('')
-          if (Array.isArray(obj)) result = obj.map(getText).join('')
-          return result
+          // NBT: { type: 'string', value: '...' }
+          if (obj.type === 'string' && typeof obj.value === 'string') return obj.value
+          // NBT compound
+          if (obj.type === 'compound' && obj.value) return getNbt(obj.value)
+          // NBT list
+          if (obj.type === 'list' && obj.value) return getNbt(obj.value)
+          // Обычный chat component
+          if (typeof obj.text === 'string') {
+            let r = obj.text
+            if (Array.isArray(obj.extra)) r += obj.extra.map(getNbt).join('')
+            return r
+          }
+          // Массив
+          if (Array.isArray(obj)) return obj.map(getNbt).join(' ')
+          // Объект — собираем все строковые значения
+          return Object.values(obj).map(v => getNbt(v)).filter(Boolean).join(' ')
         }
-        return getText(reason).replace(/\s+/g, ' ').trim() || JSON.stringify(reason).slice(0, 200)
+        const text = getNbt(reason).replace(/\s+/g, ' ').trim()
+        return text || JSON.stringify(reason).slice(0, 300)
       }
       return String(reason)
     }
