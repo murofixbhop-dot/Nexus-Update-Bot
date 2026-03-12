@@ -213,6 +213,8 @@ async function callAI (systemPrompt, userMsg) {
 callAI._lastProvider = ''
 
 // ════════════════════════════════════════════════════════════════════
+let _stopReconnect = false  // флаг остановки реконнекта (управляется из Discord)
+
 function createBot () {
   const bot = mineflayer.createBot({
     host: HOST, port: PORT, username: USERNAME, version: VERSION
@@ -2988,7 +2990,17 @@ help         → args:[]                          — помощь
     const text = extractKickText(r)
     S({ t: 'kicked', reason: text })
   })
-  bot.on('end',    () => { restoreDoorBoundingBoxes(); console.log('🔌 Реконнект 5с...'); S({ t: 'end' }); setTimeout(createBot, 5000) })
+  bot.on('end', () => {
+    restoreDoorBoundingBoxes()
+    S({ t: 'end' })
+    if (_stopReconnect) {
+      console.log('🛑 Реконнект остановлен.')
+      S({ t: 'reconnect_stopped' })
+    } else {
+      console.log('🔌 Реконнект через 5с...')
+      setTimeout(createBot, 5000)
+    }
+  })
 
   // ── STDIN обработчик (команды из Discord) ──────────────────────────────
   let _stdinBuf = ''
@@ -3006,6 +3018,18 @@ help         → args:[]                          — помощь
   })
 
   function handleStdinLine (line) {
+    // Команды управления реконнектом — работают даже без бота на сервере
+    if (line === '!стоп_реконнект' || line === '!stopreconnect') {
+      _stopReconnect = true
+      S({ t: 'reconnect_stopped' })
+      return
+    }
+    if (line === '!реконнект' || line === '!reconnect') {
+      _stopReconnect = false
+      S({ t: 'reconnect_enabled' })
+      createBot()
+      return
+    }
     if (!bot || !bot.entity) return
     // /команда — напрямую в MC (регистрация, логин и т.д.)
     if (line.startsWith('/')) {
