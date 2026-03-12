@@ -2372,27 +2372,12 @@ help         → args:[]                          — помощь
   }
 
   // ════════════════════════════════════════════════════════════════
-  //  ОБРАБОТЧИК ЧАТА
+  //  ОБРАБОТЧИК ЧАТА + stdin команды
   // ════════════════════════════════════════════════════════════════
-  bot.on('chat', async (user, message) => {
-    if (user === bot.username) return
-    lastCmdTime = Date.now()
 
-    const raw = message.trim()
-    const msg = raw.toLowerCase()
+  // Вызывается и из bot.on('chat') и из stdin
+  async function handleBotCmd (msg, raw, tok) {
     const low = msg.split(' ')
-    const tok = raw.split(' ')
-
-    // ИИ отвечает ТОЛЬКО если сообщение начинается с "ai ", "ии ", "аи " (регистр не важен)
-    if (!raw.startsWith('!')) {
-      const aiPrefixes = ['ai ', 'ии ', 'аи ', 'ai,', 'ии,', 'аи,']
-      const hasPrefix = aiPrefixes.some(p => msg.startsWith(p))
-      if (!hasPrefix) return  // игнорируем без префикса
-      // Убираем префикс из текста перед отправкой в ИИ
-      const query = raw.slice(raw.indexOf(' ') + 1).trim()
-      if (query) await handleAiMessage(user, query)
-      return
-    }
 
     // ══ СТОП ════════════════════════════════════════════════════════
     if (msg === '!стоп') { fullStop('🛑 Остановлен.'); return }
@@ -2839,6 +2824,25 @@ help         → args:[]                          — помощь
 
     // ══ ПОМОЩЬ ════════════════════════════════════════════════════════
     if (msg === '!помощь' || msg === '!команды') { await showHelp(); return }
+  }
+
+  // Обработчик MC чата — вызывает handleBotCmd только для ! команд и AI
+  bot.on('chat', async (user, message) => {
+    if (user === bot.username) return
+    lastCmdTime = Date.now()
+    const raw = message.trim()
+    const msg = raw.toLowerCase()
+    const tok = raw.split(' ')
+    // ИИ — если начинается с "ai ", "ии ", "аи "
+    if (!raw.startsWith('!')) {
+      const aiPrefixes = ['ai ', 'ии ', 'аи ', 'ai,', 'ии,', 'аи,']
+      const hasPrefix = aiPrefixes.some(p => msg.startsWith(p))
+      if (!hasPrefix) return
+      const query = raw.slice(raw.indexOf(' ') + 1).trim()
+      if (query) await handleAiMessage(user, query)
+      return
+    }
+    await handleBotCmd(msg, raw, tok)
   })
 
   // ════════════════════════════════════════════════════════════════
@@ -2937,8 +2941,42 @@ help         → args:[]                          — помощь
   bot.on('kicked', r  => { console.log('🔴 Кик:', r); S({ t: 'kicked', reason: String(r) }) })
   bot.on('end',    () => { restoreDoorBoundingBoxes(); console.log('🔌 Реконнект 5с...'); S({ t: 'end' }); setTimeout(createBot, 5000) })
 
+  // ── STDIN обработчик (команды из Discord) ──────────────────────────────
+  let _stdinBuf = ''
+  process.stdin.setEncoding('utf8')
   process.stdin.removeAllListeners('data')
-  process.stdin.on('data', d => { const t = d.toString().trim(); if (t) bot.chat(t) })
+  process.stdin.on('data', chunk => {
+    _stdinBuf += chunk
+    let nl
+    while ((nl = _stdinBuf.indexOf('\n')) !== -1) {
+      const line = _stdinBuf.slice(0, nl).trim()
+      _stdinBuf = _stdinBuf.slice(nl + 1)
+      if (!line) continue
+      handleStdinLine(line)
+    }
+  })
+
+  function handleStdinLine (line) {
+    if (!bot || !bot.entity) return
+    // /команда — напрямую в MC (регистрация, логин и т.д.)
+    if (line.startsWith('/')) {
+      bot.chat(line)
+      S({ t: 'chat_sent', text: line })
+      return
+    }
+    // !команда — через тот же обработчик что и MC чат
+    if (line.startsWith('!')) {
+      const fakeChatHandler = async (user, message) => {}
+      // Эмулируем chat event — вызываем логику напрямую
+      handleBotCmd(line.toLowerCase(), line, line.split(' '))
+      return
+    }
+    // Просто текст — отправить в MC чат
+    if (line.trim()) {
+      bot.chat(line)
+      S({ t: 'chat_sent', text: line })
+    }
+  }
 }
 
 createBot()
