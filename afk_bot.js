@@ -215,6 +215,19 @@ callAI._lastProvider = ''
 // ════════════════════════════════════════════════════════════════════
 let _stopReconnect = false  // флаг остановки реконнекта (управляется из Discord)
 
+// Глобальный перехват EPIPE — возникает когда Python закрывает pipe
+process.on('uncaughtException', e => {
+  if (e.code === 'EPIPE' || e.message.includes('EPIPE')) {
+    // stdout закрыт — просто игнорируем
+    return
+  }
+  console.error('[uncaught]', e.message)
+})
+process.stdout.on('error', e => {
+  if (e.code === 'EPIPE') return  // stdout закрыт — ок
+  console.error('[stdout err]', e.message)
+})
+
 function createBot () {
   const bot = mineflayer.createBot({
     host: HOST, port: PORT, username: USERNAME, version: VERSION
@@ -3005,7 +3018,16 @@ help         → args:[]                          — помощь
     try { bot.pathfinder.setGoal(null) } catch (_) {}
     setTimeout(() => applyMovements(), 500)
   })
-  bot.on('error',  e  => { console.error('❌', e.message); S({ t: 'error', msg: e.message }) })
+  bot.on('error', e => {
+    // EPIPE/ECONNRESET — нормально при переключении серверов (BungeeCord/Velocity)
+    const ignore = ['EPIPE', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT']
+    if (ignore.some(code => e.message.includes(code) || e.code === code)) {
+      console.log('[net] ' + e.message + ' (ignored)')
+      return
+    }
+    console.error('❌', e.message)
+    S({ t: 'error', msg: e.message })
+  })
   bot.on('kicked', r => {
     console.log('🔴 Кик:', r)
     // Извлекаем читаемый текст из kick reason (может быть JSON объект или строка)
