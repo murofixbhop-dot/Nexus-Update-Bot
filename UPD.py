@@ -771,14 +771,14 @@ class MCBotManager:
         except Exception as e:
             print(f"[MC] start error: {e}"); return False
 
-    def _notify(self, text: str):
-        """Отправить уведомление в MC канал Discord."""
+    def _notify(self, text: str, delete_after: int = 20):
+        """Отправить уведомление в MC канал Discord (авто-удаление через 20с)."""
         loop = self._discord_loop
         if loop and not loop.is_closed():
             async def _send():
                 ch = bot.get_channel(MC_CHANNEL_ID)
                 if ch:
-                    try: await ch.send(text)
+                    try: await ch.send(text, delete_after=delete_after)
                     except: pass
             asyncio.run_coroutine_threadsafe(_send(), loop)
 
@@ -843,6 +843,12 @@ class MCBotManager:
 
                     elif t == "chat_sent":
                         self._notify(f"📤 **Отправлено в MC:** `{m.get('text','')[:200]}`")
+
+                    elif t == "reconnect_stopped":
+                        self._notify("🛑 **Реконнект остановлен.** Нажми 🔄 Реконнект чтобы снова подключиться.", delete_after=60)
+
+                    elif t == "reconnect_enabled":
+                        self._notify("🔄 **Реконнект запущен...** Подключаюсь...", delete_after=20)
 
                 except Exception as e:
                     print(f"[MC JSON parse] {e}: {line[:100]}")
@@ -2038,57 +2044,72 @@ class MCPanelView(discord.ui.View):
         emoji = {"мирный":"🕊️","защита":"🛡️","агрессия":"⚔️"}[nxt]
         await interaction.response.send_message(f"{emoji} Режим: **{nxt}**", ephemeral=True)
 
+    # ══ ROW 1 доп — Реконнект ════════════════════════════════════════════════
+    @discord.ui.button(label="🔄 Реконнект", style=discord.ButtonStyle.success, custom_id="mc_reconnect_btn", row=2)
+    async def btn_reconnect(self, interaction, button):
+        if not self._is_owner(interaction): return await self._deny(interaction)
+        await interaction.response.defer(ephemeral=True)
+        mc_bot.send("!реконнект")
+        await interaction.followup.send("🔄 Реконнект запущен...", ephemeral=True)
+
+    @discord.ui.button(label="🚫 Стоп реконнект", style=discord.ButtonStyle.danger, custom_id="mc_stopreconnect_btn", row=2)
+    async def btn_stopreconnect(self, interaction, button):
+        if not self._is_owner(interaction): return await self._deny(interaction)
+        await interaction.response.defer(ephemeral=True)
+        mc_bot.send("!стоп_реконнект")
+        await interaction.followup.send("🛑 Реконнект остановлен.", ephemeral=True)
+
     # ══ ROW 2 — Движение ═════════════════════════════════════════════════════
-    @discord.ui.button(label="⬆️", style=discord.ButtonStyle.secondary, custom_id="mc_fwd",  row=2)
+    @discord.ui.button(label="⬆️", style=discord.ButtonStyle.secondary, custom_id="mc_fwd",  row=3)
     async def btn_fwd(self, interaction, button):
         if not self._is_owner(interaction): return await self._deny(interaction)
         if self._need_bot(interaction): return await interaction.response.send_message("❌ Не на сервере.", ephemeral=True)
         mc_bot.send("!run"); await interaction.response.send_message("⬆️ Вперёд!", ephemeral=True)
 
-    @discord.ui.button(label="⬇️", style=discord.ButtonStyle.secondary, custom_id="mc_back", row=2)
+    @discord.ui.button(label="⬇️", style=discord.ButtonStyle.secondary, custom_id="mc_back", row=3)
     async def btn_back(self, interaction, button):
         if not self._is_owner(interaction): return await self._deny(interaction)
         if self._need_bot(interaction): return await interaction.response.send_message("❌ Не на сервере.", ephemeral=True)
         mc_bot.send("!back"); await interaction.response.send_message("⬇️ Назад!", ephemeral=True)
 
-    @discord.ui.button(label="🐰 Прыжок", style=discord.ButtonStyle.secondary, custom_id="mc_jump_btn", row=2)
+    @discord.ui.button(label="🐰 Прыжок", style=discord.ButtonStyle.secondary, custom_id="mc_jump_btn", row=3)
     async def btn_jump(self, interaction, button):
         if not self._is_owner(interaction): return await self._deny(interaction)
         if self._need_bot(interaction): return await interaction.response.send_message("❌ Не на сервере.", ephemeral=True)
         mc_bot.send("!прыгни"); await interaction.response.send_message("🐰 Прыгаю!", ephemeral=True)
 
-    @discord.ui.button(label="🌀 Spin", style=discord.ButtonStyle.secondary, custom_id="mc_spin_btn", row=2)
+    @discord.ui.button(label="🌀 Spin", style=discord.ButtonStyle.secondary, custom_id="mc_spin_btn", row=3)
     async def btn_spin(self, interaction, button):
         if not self._is_owner(interaction): return await self._deny(interaction)
         if self._need_bot(interaction): return await interaction.response.send_message("❌ Не на сервере.", ephemeral=True)
         mc_bot.send("!кружись"); await interaction.response.send_message("🌀 Кружусь!", ephemeral=True)
 
-    @discord.ui.button(label="🛑 Стоп", style=discord.ButtonStyle.danger, custom_id="mc_stop_move_btn", row=2)
+    @discord.ui.button(label="🛑 Стоп", style=discord.ButtonStyle.danger, custom_id="mc_stop_move_btn", row=3)
     async def btn_stop_move(self, interaction, button):
         if not self._is_owner(interaction): return await self._deny(interaction)
         if self._need_bot(interaction): return await interaction.response.send_message("❌ Не на сервере.", ephemeral=True)
         mc_bot.send("!стоп"); await interaction.response.send_message("🛑 Стоп!", ephemeral=True)
 
     # ══ ROW 3 — Действия ═════════════════════════════════════════════════════
-    @discord.ui.button(label="😴 Спать", style=discord.ButtonStyle.secondary, custom_id="mc_sleep_btn", row=3)
+    @discord.ui.button(label="😴 Спать", style=discord.ButtonStyle.secondary, custom_id="mc_sleep_btn", row=4)
     async def btn_sleep(self, interaction, button):
         if not self._is_owner(interaction): return await self._deny(interaction)
         if self._need_bot(interaction): return await interaction.response.send_message("❌ Не на сервере.", ephemeral=True)
         mc_bot.send("!спать"); await interaction.response.send_message("😴 Иду спать...", ephemeral=True)
 
-    @discord.ui.button(label="🍖 Поесть", style=discord.ButtonStyle.secondary, custom_id="mc_eat_btn", row=3)
+    @discord.ui.button(label="🍖 Поесть", style=discord.ButtonStyle.secondary, custom_id="mc_eat_btn", row=4)
     async def btn_eat(self, interaction, button):
         if not self._is_owner(interaction): return await self._deny(interaction)
         if self._need_bot(interaction): return await interaction.response.send_message("❌ Не на сервере.", ephemeral=True)
         mc_bot.send("!поешь"); await interaction.response.send_message("😋 Ем!", ephemeral=True)
 
-    @discord.ui.button(label="🎒 Инвентарь", style=discord.ButtonStyle.secondary, custom_id="mc_inv_btn", row=3)
+    @discord.ui.button(label="🎒 Инвентарь", style=discord.ButtonStyle.secondary, custom_id="mc_inv_btn", row=4)
     async def btn_inv(self, interaction, button):
         if not self._is_owner(interaction): return await self._deny(interaction)
         if self._need_bot(interaction): return await interaction.response.send_message("❌ Не на сервере.", ephemeral=True)
         mc_bot.send("!инвентарь"); await interaction.response.send_message("🎒 Запрошен инвентарь — смотри в логах.", ephemeral=True)
 
-    @discord.ui.button(label="❤️ HP", style=discord.ButtonStyle.secondary, custom_id="mc_hp_btn", row=3)
+    @discord.ui.button(label="❤️ HP", style=discord.ButtonStyle.secondary, custom_id="mc_hp_btn", row=4)
     async def btn_hp(self, interaction, button):
         if not self._is_owner(interaction): return await self._deny(interaction)
         if self._need_bot(interaction): return await interaction.response.send_message("❌ Не на сервере.", ephemeral=True)
@@ -2096,7 +2117,7 @@ class MCPanelView(discord.ui.View):
         await interaction.response.send_message(
             f"❤️ `{mc_bot.health}/20`  🍖 `{mc_bot.food}/20`", ephemeral=True)
 
-    @discord.ui.button(label="📍 Где я", style=discord.ButtonStyle.secondary, custom_id="mc_pos_btn", row=3)
+    @discord.ui.button(label="📍 Где я", style=discord.ButtonStyle.secondary, custom_id="mc_pos_btn", row=4)
     async def btn_pos(self, interaction, button):
         if not self._is_owner(interaction): return await self._deny(interaction)
         if self._need_bot(interaction): return await interaction.response.send_message("❌ Не на сервере.", ephemeral=True)
