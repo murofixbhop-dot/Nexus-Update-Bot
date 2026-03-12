@@ -1881,6 +1881,7 @@ class MCJoinModal(discord.ui.Modal, title="🔌 Подключить MC бота
             port = 25565
 
         ver  = self.mc_version.value.strip() or MC_VERSION
+        if ver.lower() in ('auto', 'авто', 'false', ''): ver = 'auto'
         user = self.mc_user.value.strip()    or MC_USERNAME
 
         await interaction.response.defer(ephemeral=True, thinking=True)
