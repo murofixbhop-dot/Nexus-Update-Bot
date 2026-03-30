@@ -42,6 +42,8 @@ MC_CHANNEL_ID = 1476616123129528535  # канал управления Minecraft
 
 AI_WEBHOOK_URL = "https://discord.com/api/webhooks/1475241998192738465/3oizxu-P-te46UHTQYspsI056qAUnT9TwwM8YDLeiJTQIx1VmoTdhdaZtiiNb4bMwjmO"
 AI_AVATAR_URL = "https://i.ibb.co/C3m2BskD/Nexus-AI-Icon.png"
+NEXUS_AI_CHANNEL_ID = 1487994345423507466
+MC_WEBHOOK_SECRET = os.getenv("MC_WEBHOOK_SECRET", "minecraft_secret_key")
 
 ROLE_SCRIPT_ID = 1472108709059625034
 ROLE_EXECUTER_ID = 1472108653552337049
@@ -1413,6 +1415,35 @@ def webhook():
         bot.loop.create_task(send_github_update(info, message, author))
         return jsonify({"status": "success"}), 200
     return jsonify({"status": "ignored"}), 400
+
+
+@app.route("/mc-webhook", methods=["POST"])
+def mc_webhook():
+    auth = request.headers.get("Authorization", "")
+    if auth != f"Bearer {MC_WEBHOOK_SECRET}":
+        return jsonify({"status": "unauthorized"}), 401
+    data = request.json
+    if not data:
+        return jsonify({"status": "bad_request"}), 400
+    content = data.get("content", "")
+    username = data.get("username", "Minecraft Bot")
+    avatar_url = data.get("avatar_url", "")
+    if content:
+        bot.loop.create_task(
+            send_to_channel(NEXUS_AI_CHANNEL_ID, content, username, avatar_url)
+        )
+        return jsonify({"status": "success"}), 200
+    return jsonify({"status": "no_content"}), 204
+
+
+async def send_to_channel(channel_id, content, username="Nexus AI", avatar_url=""):
+    channel = bot.get_channel(channel_id)
+    if not channel:
+        print(f"[mc-webhook] Channel {channel_id} not found")
+        return
+    if not avatar_url:
+        avatar_url = AI_AVATAR_URL
+    await send_to_webhook(content, username, avatar_url)
 
 
 def run_flask():
@@ -3695,6 +3726,25 @@ async def on_message(message):
             )
             return
 
+        # !blueprints — список чертежей
+        elif cmd == "blueprints":
+            bp_list = [
+                ("дом", "7×7 дом из булыжника с деревянным каркасом"),
+                ("стена", "11×5 стена из булыжника"),
+                ("башня", "4×4×15 башня из камня"),
+                ("мост", "3×21 мост из досок"),
+                ("портал_нетёр", "портал в Незер 4×5 из обсидиана"),
+                ("ферма_пауков", "ферма пауков 5×5"),
+                ("вышка_для_блейзов", "вышка для блейзов 3×3"),
+                ("кузница", "кузница с печью и сундуком"),
+                ("забор_периметр", "забор 11×2 из дуба"),
+            ]
+            lines = ["**🏗️ Доступные чертежи:**"]
+            for name, desc in bp_list:
+                lines.append(f"`!строить {name}` — {desc}")
+            await message.channel.send("\n".join(lines))
+            return
+
         # ── Прямые команды afk_bot.js через stdin ─────────────────────────────
         def _chk():
             return mc_bot.connected
@@ -3737,6 +3787,9 @@ async def on_message(message):
             "команды",
             "сундук",
             "скажи",
+            "строить",
+            "build",
+            "blackprints",
         }
         if cmd in PASSTHROUGH_CMDS or content.startswith("!"):
             if not _chk():
