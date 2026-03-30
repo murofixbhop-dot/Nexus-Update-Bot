@@ -172,6 +172,152 @@ const BUILDING_BLUEPRINTS = {
         b.push({ dx: x, dy: 0, dz: z, block: 'oak_planks' })
     return b
   })(),
+
+  портал_нетчёт: [
+    { dx: 0, dy: 0, dz: 0, block: 'obsidian' },
+    { dx: 1, dy: 0, dz: 0, block: 'obsidian' },
+    { dx: 2, dy: 0, dz: 0, block: 'obsidian' },
+    { dx: 3, dy: 0, dz: 0, block: 'obsidian' },
+    { dx: 4, dy: 0, dz: 0, block: 'obsidian' },
+    { dx: 0, dy: 1, dz: 0, block: 'obsidian' },
+    { dx: 4, dy: 1, dz: 0, block: 'obsidian' },
+    { dx: 0, dy: 2, dz: 0, block: 'obsidian' },
+    { dx: 4, dy: 2, dz: 0, block: 'obsidian' },
+    { dx: 0, dy: 3, dz: 0, block: 'obsidian' },
+    { dx: 4, dy: 3, dz: 0, block: 'obsidian' },
+    { dx: 0, dy: 4, dz: 0, block: 'obsidian' },
+    { dx: 1, dy: 4, dz: 0, block: 'obsidian' },
+    { dx: 2, dy: 4, dz: 0, block: 'portal' },
+    { dx: 3, dy: 4, dz: 0, block: 'obsidian' },
+    { dx: 4, dy: 4, dz: 0, block: 'obsidian' },
+  ],
+
+  ферма_пауков: [
+    { dx: 0, dy: 0, dz: 0, block: 'cobblestone' },
+    { dx: 1, dy: 0, dz: 0, block: 'cobblestone' },
+    { dx: 2, dy: 0, dz: 0, block: 'cobblestone' },
+    { dx: 3, dy: 0, dz: 0, block: 'cobblestone' },
+    { dx: 0, dy: 0, dz: 1, block: 'cobblestone' },
+    { dx: 4, dy: 0, dz: 1, block: 'cobblestone' },
+    { dx: 0, dy: 0, dz: 2, block: 'cobblestone' },
+    { dx: 4, dy: 0, dz: 2, block: 'cobblestone' },
+    { dx: 0, dy: 0, dz: 3, block: 'cobblestone' },
+    { dx: 4, dy: 0, dz: 3, block: 'cobblestone' },
+    { dx: 1, dy: 0, dz: 4, block: 'cobblestone' },
+    { dx: 2, dy: 0, dz: 4, block: 'spawner' },
+    { dx: 3, dy: 0, dz: 4, block: 'cobblestone' },
+    { dx: 1, dy: 1, dz: 2, block: 'air' },
+    { dx: 2, dy: 1, dz: 2, block: 'air' },
+    { dx: 3, dy: 1, dz: 2, block: 'air' },
+  ],
+
+  вышка_для_блейзов: [
+    { dx: 0, dy: 0, dz: 0, block: 'cobblestone' },
+    { dx: 1, dy: 0, dz: 0, block: 'cobblestone' },
+    { dx: 2, dy: 0, dz: 0, block: 'cobblestone' },
+    { dx: 0, dy: 1, dz: 0, block: 'cobblestone' },
+    { dx: 1, dy: 1, dz: 0, block: 'soul_sand' },
+    { dx: 2, dy: 1, dz: 0, block: 'cobblestone' },
+    { dx: 0, dy: 2, dz: 0, block: 'cobblestone' },
+    { dx: 1, dy: 2, dz: 0, block: 'glowstone' },
+    { dx: 2, dy: 2, dz: 0, block: 'cobblestone' },
+  ],
+
+  кузница: [
+    { dx: 0, dy: 0, dz: 0, block: 'oak_planks' },
+    { dx: 1, dy: 0, dz: 0, block: 'oak_planks' },
+    { dx: 2, dy: 0, dz: 0, block: 'oak_planks' },
+    { dx: 3, dy: 0, dz: 0, block: 'oak_planks' },
+    { dx: 0, dy: 1, dz: 0, block: 'oak_fence' },
+    { dx: 1, dy: 1, dz: 0, block: 'furnace' },
+    { dx: 2, dy: 1, dz: 0, block: 'chest' },
+    { dx: 3, dy: 1, dz: 0, block: 'oak_fence' },
+  ],
+
+  забор_периметр: (() => {
+    const b = []
+    for (let x = 0; x < 11; x++) {
+      b.push({ dx: x, dy: 0, dz: 0, block: 'oak_fence' })
+      b.push({ dx: x, dy: 1, dz: 0, block: 'oak_fence' })
+    }
+    return b
+  })(),
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  NEXUS AI WEBHOOK — связь с Discord ботом
+// ════════════════════════════════════════════════════════════════════
+const NEXUS_WEBHOOK_URL = 'https://discord.com/api/webhooks/1487994516827803811/5GRHPQ4-IoCId0g8JCre-mtq-FEAcBU9sgYPuiX1XiK1SfOBjrRj_UYfbm3En-S8Evng'
+const NEXUS_CHANNEL_ID = '1487994345423507466'
+
+async function askNexusAI (question) {
+  return new Promise((resolve) => {
+    const payload = {
+      content: `**🎮 Minecraft Bot запрос:**\n${question}`,
+      username: 'Minecraft Bot',
+      avatar_url: 'https://i.imgur.com/abc123.png'
+    }
+
+    try {
+      const https = require('https')
+      const url = new URL(NEXUS_WEBHOOK_URL)
+      const options = {
+        hostname: url.hostname,
+        path: url.pathname,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      }
+
+      const req = https.request(options, (res) => {
+        let data = ''
+        res.on('data', (chunk) => data += chunk)
+        res.on('end', () => {
+          console.log('[Nexus AI] Запрос отправлен')
+          resolve(true)
+        })
+      })
+      req.on('error', (e) => {
+        console.log('[Nexus AI] Ошибка:', e.message)
+        resolve(false)
+      })
+      req.write(JSON.stringify(payload))
+      req.end()
+    } catch (e) {
+      console.log('[Nexus AI] Exception:', e.message)
+      resolve(false)
+    }
+  })
+}
+
+async function sendToNexusChannel (message) {
+  return new Promise((resolve) => {
+    const payload = {
+      content: message,
+      username: 'Minecraft Bot',
+    }
+
+    try {
+      const https = require('https')
+      const url = new URL(NEXUS_WEBHOOK_URL)
+      const options = {
+        hostname: url.hostname,
+        path: url.pathname,
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      }
+
+      const req = https.request(options, (res) => {
+        resolve(true)
+      })
+      req.on('error', (e) => { resolve(false) })
+      req.write(JSON.stringify(payload))
+      req.end()
+    } catch (e) {
+      resolve(false)
+    }
+  })
 }
 
 const POTION_RECIPES = {
@@ -353,6 +499,8 @@ function createBot () {
   let boatRunning  = false
   let boatTX = null, boatTZ = null
   let lastCmdTime  = Date.now()
+  let lastMoveCheck = Date.now()
+  let lastPosX = 0, lastPosY = 0, lastPosZ = 0
 
   // ════════════════════════════════════════════════════════════════════
   //  AI ПЛАНИРОВЩИК — многоходовые планы
@@ -1399,6 +1547,25 @@ look         → args:["direction"]               — посмотреть в н
     if (strafeChangeCd > 0) strafeChangeCd--
     strafeTick++
     tryOpenDoorAhead()
+    // Защита от зависания - если не двигался 15 сек, сбросить pathfinder
+    if (physTick % 20 === 0) {  // каждые ~1 сек
+      const now = Date.now()
+      const pos = bot.entity?.position
+      if (pos) {
+        const moved = Math.abs(pos.x - lastPosX) + Math.abs(pos.y - lastPosY) + Math.abs(pos.z - lastPosZ) > 0.1
+        if (moved) {
+          lastMoveCheck = now
+          lastPosX = pos.x; lastPosY = pos.y; lastPosZ = pos.z
+        } else if (now - lastMoveCheck > 15000 && MODE) {
+          // Зависли! Сбрасываем
+          console.log('[stuck] Бот завис, сбрасываю pathfinder...')
+          pfStop()
+          bot.clearControlStates()
+          MODE = null
+          lastMoveCheck = now
+        }
+      }
+    }
     // Управление взглядом в зависимости от состояния
     if (isWaterDropping) {
       // Water drop: смотрим вниз каждый тик — force=true отправляет пакет немедленно
@@ -2924,6 +3091,72 @@ look         → args:["direction"]               — посмотреть в н
       return
     }
 
+    if (cmd === 'build') {
+      const blueprintName = (args[0] || '').toLowerCase()
+      const sizeMultiplier = parseFloat(args[1]) || 1
+
+      if (!blueprintName) {
+        bot.chat('📋 Blueprints: ' + Object.keys(BUILDING_BLUEPRINTS).join(', '))
+        bot.chat('💡 Использование: !build <название> [множитель]')
+        bot.chat('📍 Сначала я поставлю 2 маркера в углах - укажи территорию!')
+        return
+      }
+
+      const blueprint = BUILDING_BLUEPRINTS[blueprintName]
+      if (!blueprint) {
+        bot.chat('❌ Неизвестный blueprint. Список: ' + Object.keys(BUILDING_BLUEPRINTS).join(', '))
+        return
+      }
+
+      const pos = bot.entity.position
+      const marker1Pos = pos.offset(0, -1, 0)
+      const marker2Pos = pos.offset(
+        Math.max(...blueprint.map(b => b.dx)) * sizeMultiplier + 2,
+        Math.max(...blueprint.map(b => b.dy)) * sizeMultiplier + 2,
+        Math.max(...blueprint.map(b => b.dz)) * sizeMultiplier + 2
+      )
+
+      attentionLocked = true
+
+      try {
+        const marker1 = bot.inventory.items().find(i => i.name === 'glowstone' || i.name === 'seaLantern')
+        const marker2 = bot.inventory.items().find(i => i.name === 'glowstone' || i.name === 'seaLantern')
+        
+        if (!marker1 || !marker2) {
+          bot.chat('❌ Нужны 2 светящихся блока для маркеров!')
+          attentionLocked = false
+          return
+        }
+
+        await bot.equip(marker1, 'hand')
+        await bot.lookAt(marker1Pos.offset(0.5, 0.5, 0.5), true)
+        await sleep(100)
+        const face1 = new Vec3(0, -1, 0)
+        await bot.placeBlock(marker1Pos, face1).catch(() => {})
+        
+        await bot.equip(marker2, 'hand')
+        await bot.lookAt(marker2Pos.offset(0.5, 0.5, 0.5), true)
+        await sleep(100)
+        const face2 = new Vec3(0, -1, 0)
+        await bot.placeBlock(marker2Pos, face2).catch(() => {})
+
+        const blockCount = blueprint.length
+        const question = `Мне нужно построить "${blueprintName}". Размер: ${blockCount} блоков. Множитель: ${sizeMultiplier}. Координаты маркеров: [${marker1Pos.x.toFixed(0)}, ${marker1Pos.y.toFixed(0)}, ${marker1Pos.z.toFixed(0)}] и [${marker2Pos.x.toFixed(0)}, ${marker2Pos.y.toFixed(0)}, ${marker2Pos.z.toFixed(0)}]. Какие ресурсы мне нужны?`
+
+        bot.chat('📍 Маркеры установлены! 📍')
+        bot.chat('🔍 Запрашиваю информацию у Nexus AI...')
+        
+        await askNexusAI(question)
+        bot.chat('✅ Запрос отправлен! Жду ответ от Nexus AI в канале.')
+        
+      } catch (e) {
+        bot.chat('❌ Ошибка: ' + e.message)
+      }
+      
+      attentionLocked = false
+      return
+    }
+
     if (cmd === 'goto' || cmd === 'goto_nearest') {
       if (cmd === 'goto' && args[0] && args[1] && args[2]) {
         const x = parseFloat(args[0]), y = parseFloat(args[1]), z = parseFloat(args[2])
@@ -3411,6 +3644,226 @@ look         → args:["direction"]               — посмотреть в н
   async function handleBotCmd (msg, raw, tok) {
     const low = msg.split(' ')
 
+    // ══ РУССКИЕ КОМАНДЫ (без !) ══════════════════════════════════════
+    //Natural language: добудь X, скрафти X, поставь X, копай X
+    const RU_ITEMS = {
+      // Дерево
+      'дерево': 'oak_log', 'дуб': 'oak_log', 'бревно': 'oak_log', 'брёвна': 'oak_log',
+      'доски': 'oak_planks', 'доска': 'oak_planks', 'планки': 'oak_planks',
+      // Камень
+      'камень': 'cobblestone', 'булыжник': 'cobblestone', 'кругляк': 'cobblestone',
+      // Руды
+      'железо': 'iron_ore', 'железную руду': 'iron_ore', 'железную': 'iron_ore',
+      'золото': 'gold_ore', 'золотую руду': 'gold_ore', 'золотую': 'gold_ore',
+      'алмаз': 'diamond_ore', 'алмазы': 'diamond_ore', 'алмазную': 'diamond_ore',
+      'алмазную руду': 'diamond_ore',
+      'уголь': 'coal_ore', 'угольную': 'coal_ore', 'угольную руду': 'coal_ore',
+      'медь': 'copper_ore', 'медную': 'copper_ore', 'медную руду': 'copper_ore',
+      'лазурит': 'lapis_ore', 'лазуревую': 'lapis_ore', 'лазуревую руду': 'lapis_ore',
+      'редстоун': 'redstone_ore', 'редстоуновую': 'redstone_ore', 'редстоуновую руду': 'redstone_ore',
+      'изумруд': 'emerald_ore', 'изумрудную': 'emerald_ore', 'изумрудную руду': 'emerald_ore',
+      // Инструменты/предметы
+      'верстак': 'crafting_table', 'стал': 'crafting_table',
+      'печь': 'furnace', 'печку': 'furnace', 'печки': 'furnace',
+      'кирку': 'stone_pickaxe', 'кирка': 'stone_pickaxe', 'кирки': 'stone_pickaxe',
+      'деревянную кирку': 'wooden_pickaxe', 'деревянную': 'wooden_pickaxe',
+      'каменную кирку': 'stone_pickaxe', 'каменную': 'stone_pickaxe',
+      'железную кирку': 'iron_pickaxe', 'железную': 'iron_pickaxe',
+      'алмазную кирку': 'diamond_pickaxe',
+      'топор': 'stone_axe', 'топоры': 'stone_axe',
+      'деревянный топор': 'wooden_axe', 'деревянный': 'wooden_axe',
+      'каменный топор': 'stone_axe', 'каменный': 'stone_axe',
+      'железный топор': 'iron_axe', 'железный': 'iron_axe',
+      'алмазный топор': 'diamond_axe', 'алмазный': 'diamond_axe',
+      'меч': 'stone_sword', 'мечи': 'stone_sword',
+      'деревянный меч': 'wooden_sword', 'каменный меч': 'stone_sword',
+      'железный меч': 'iron_sword', 'алмазный меч': 'diamond_sword',
+      'лопату': 'stone_shovel', 'лопата': 'stone_shovel', 'лопаты': 'stone_shovel',
+      'деревянную лопату': 'wooden_shovel', 'каменную лопату': 'stone_shovel',
+      'железную лопату': 'iron_shovel', 'алмазную лопату': 'diamond_shovel',
+      'стекло': 'glass', 'стёкла': 'glass',
+      'обсидиан': 'obsidian', 'обсидиана': 'obsidian',
+      'грядка': 'farmland', 'ферма': 'farmland',
+      'сундук': 'chest', 'сундуки': 'chest',
+      'рельсы': 'rail', 'рельс': 'rail',
+      'торец': 'oak_slab', 'плиту': 'oak_slab', 'плиты': 'oak_slab',
+      'стена': 'cobblestone_wall', 'забор': 'oak_fence',
+      'лестницу': 'ladder', 'лестница': 'ladder', 'лестницы': 'ladder',
+      'рюкзак': 'chest', 'сундук': 'chest',
+      // Еда
+      'хлеб': 'bread', 'еда': 'bread', 'еду': 'bread',
+      // Блоки для постройки
+      'глина': 'clay', 'стекло': 'glass',
+      'шерсть': 'white_wool', 'вату': 'white_wool', 'вата': 'white_wool',
+      'каменный': 'stone', 'каменная': 'stone',
+      'кирпич': 'brick', 'кирпичи': 'brick', 'кирпичей': 'brick',
+      'цемент': 'white_concrete', 'бетон': 'white_concrete',
+    }
+
+    function ruToEn(item) {
+      return RU_ITEMS[item] || null
+    }
+
+    // Ловим русские команды (без !)
+    const ruPrefixes = [
+      /^добудь\s+(.+)/, /^добыть\s+(.+)/, /^найди\s+(.+)/, /^дай\s+(.+)/,
+      /^скрафти\s+(.+)/, /^скрафтить\s+(.+)/, /^крафт\s+(.+)/, /^крафтить\s+(.+)/,
+      /^поставь\s+(.+)/, /^поставить\s+(.+)/, /^построй\s+(.+)/, /^строить\s+(.+)/,
+      /^копай\s+(.+)/, /^копать\s+(.+)/, /^добудь\s+(.+)/,
+      /^свари\s+(.+)/, /^плавиль\s+(.+)/,
+    ]
+
+    let matched = false
+    let argsStr = ''
+
+    for (const rx of ruPrefixes) {
+      const m = msg.match(rx)
+      if (m) { argsStr = m[1].trim(); matched = true; break }
+    }
+
+    if (matched && msg.startsWith('!')) {
+      // Already a bot command, skip
+    } else if (matched) {
+      // Перехватываем русские команды
+      if (msg.startsWith('добудь') || msg.startsWith('добыть') || msg.startsWith('найди') || msg.startsWith('дай')) {
+        // Добудь X - ищем блок
+        let item = ruToEn(argsStr)
+        if (!item) {
+          // Пробуем просто как есть (например "камень", "дерево")
+          item = argsStr.replace(/^до[бв]уди\s*/, '').trim()
+          // Проверяем есть ли такой блок
+          if (mcData && !mcData.blocksByName[item]) {
+            // Пробуем с окончаниями
+            const base = item.replace(/(ый|ая|ое|ые|ой|ем|ам|ами|ах)$/, '')
+            if (mcData.blocksByName[base]) item = base
+          }
+        }
+        if (!mcData) return bot.chat('❌ Бот не инициализирован')
+        const bType = mcData.blocksByName[item]
+        if (!bType) {
+          // Пробуем найти по alias
+          const aliasNames = BLOCK_ALIASES[item] || [item]
+          const aliasIds = aliasNames.map(n => mcData.blocksByName[n]).filter(Boolean).map(b => b.id)
+          if (!aliasIds.length) {
+            bot.chat('❌ Не знаю что такое "' + argsStr + '" (' + item + ')')
+            return
+          }
+          // Добыча через collectBlock (сам копает всё что мешает)
+          fullStop(); MODE = 'farm'; isMining = true
+          bot.chat('⛏️ Добываю ' + argsStr + '...')
+          let got = 0, fails = 0
+          ;(async () => {
+            while (MODE === 'farm' && got < 16) {
+              const blk = bot.findBlock({ matching: aliasIds, maxDistance: 64 })
+              if (!blk) {
+                if (++fails >= 3) { bot.chat('❌ Не найден ' + argsStr + '!'); break }
+                await sleep(500); continue
+              }
+              fails = 0
+              try {
+                await bot.collectBlock.collect(blk, { limit: 1 })
+                got++
+                if (got % 4 === 0) bot.chat('📦 ' + got + '/16 ' + argsStr)
+              } catch (e) {
+                bot.chat('❌ Ошибка: ' + e.message)
+              }
+              await sleep(200)
+            }
+            isMining = false; pfStop()
+            bot.chat('✅ Добыто ' + got + '× ' + argsStr + '!')
+            if (MODE === 'farm') MODE = null
+          })()
+          return
+        }
+        // Если это предмет (не блок), используем collect для дропа
+        const dType = mcData.itemsByName[item]
+        if (dType) {
+          fullStop(); MODE = 'collect'
+          bot.chat('📦 Ищу ' + argsStr + '...')
+          bot.collectBlock.collect(bot.findBlock({ matching: bType?.id, maxDistance: 64 }) || null, { limit: 16 }, err => {
+            if (MODE === 'collect') MODE = null
+            bot.chat(err ? '❌ ' + err.message : '✅ Нашёл ' + argsStr + '!')
+          })
+          return
+        }
+      }
+
+      if (msg.startsWith('скрафти') || msg.startsWith('скрафтить') || msg.startsWith('крафт')) {
+        let item = ruToEn(argsStr) || argsStr.replace(/^скрафти\s*/, '').trim()
+        // Убираем "мне" в конце
+        item = item.replace(/\s*мне\s*$/, '').trim()
+        bot.chat('🔨 Крафтлю ' + item + '...')
+        smartCraft(item, 1).then(() => {}).catch(e => bot.chat('❌ ' + e.message))
+        return
+      }
+
+      if (msg.startsWith('поставь') || msg.startsWith('поставить') || msg.startsWith('построй')) {
+        let item = ruToEn(argsStr) || argsStr.replace(/^поставь\s*/, '').trim()
+        item = item.replace(/\s*сюда\s*$/, '').replace(/\s*тут\s*$/, '').trim()
+        const itemType = mcData?.itemsByName[item] || mcData?.blocksByName[item]
+        if (!itemType) { bot.chat('❌ Не знаю что такое "' + item + '"'); return }
+        const have = bot.inventory.items().find(i => i.name.includes(item) || i.name === item)
+        if (!have) { bot.chat('❌ Нет ' + item); return }
+        bot.chat('🏗️ Ставлю ' + item + '...')
+        await bot.equip(have, 'hand')
+        // Ставим рядом с ботом
+        const directions = [
+          new Vec3(0, 0, 1), new Vec3(0, 0, -1), new Vec3(1, 0, 0), new Vec3(-1, 0, 0),
+          new Vec3(0, 1, 0), new Vec3(0, -1, 0)
+        ]
+        for (const dir of directions) {
+          const p = bot.entity.position.floored().offset(dir.x, dir.y, dir.z)
+          const bl = bot.blockAt(p)
+          if (bl && bl.boundingBox === 'block' && bl.name === 'air') {
+            try {
+              await bot.placeBlock(bl, new Vec3(0, -1, 0))
+              bot.chat('✅ Поставил ' + item + '!')
+              return
+            } catch (_) {}
+          }
+        }
+        bot.chat('❌ Некуда ставить!')
+        return
+      }
+
+      if (msg.startsWith('копай')) {
+        let item = ruToEn(argsStr) || argsStr
+        const aliasNames = BLOCK_ALIASES[item] || [item]
+        const aliasIds = aliasNames.map(n => mcData.blocksByName[n]).filter(Boolean).map(b => b.id)
+        if (!aliasIds.length) { bot.chat('❌ "' + item + '" неизвестен'); return }
+        fullStop(); MODE = 'farm'; isMining = true
+        bot.chat('⛏️ Копаю ' + item + '...')
+        let got = 0, fails = 0
+        ;(async () => {
+          while (MODE === 'farm' && got < 16) {
+            const blk = bot.findBlock({ matching: aliasIds, maxDistance: 64 })
+            if (!blk) {
+              if (++fails >= 3) { bot.chat('❌ Кончился ' + item + '!'); break }
+              await sleep(500); continue
+            }
+            fails = 0
+            try {
+              await bot.collectBlock.collect(blk, { limit: 1 })
+              got++
+            } catch (_) {}
+            await sleep(200)
+          }
+          isMining = false; pfStop()
+          bot.chat('✅ Накопал ' + got + '× ' + item + '!')
+          if (MODE === 'farm') MODE = null
+        })()
+        return
+      }
+
+      if (msg.startsWith('свари') || msg.startsWith('плавиль')) {
+        let item = ruToEn(argsStr) || argsStr
+        bot.chat('🔥 Плавлю ' + item + '...')
+        smeltItem(item, 1).catch(e => bot.chat('❌ ' + e.message))
+        return
+      }
+    }
+
+
     // ══ СТОП ════════════════════════════════════════════════════════
     if (msg === '!стоп') { fullStop('🛑 Остановлен.'); return }
 
@@ -3583,14 +4036,17 @@ look         → args:["direction"]               — посмотреть в н
       fullStop(); MODE = 'farm'; isMining = true
       bot.chat('⛏️ ' + count + '× ' + bName + '...')
       let got = 0, fails = 0
+      const farmStart = Date.now()
+      const FARM_TIMEOUT = 120000 // 2 минуты макс
       while (MODE === 'farm' && got < count) {
+        if (Date.now() - farmStart > FARM_TIMEOUT) { bot.chat('⏰ Таймаут фарма!'); break }
         const blk = bot.findBlock({ matching: aliasIds, maxDistance: 100 })
         if (!blk) {
           if (++fails >= 3) { bot.chat('❌ Не найден!'); break }
           await sleep(500); continue
         }
         fails = 0
-        // collectBlock: сам ищет путь, сам подбирает дроп, проверяет LOS
+        // collectBlock сам идёт к блоку и копает всё что мешает (digLimit=default=∞)
         const ok = await new Promise(res => bot.collectBlock.collect(blk, {}, e => res(!e)))
         if (ok) { got++; if (got % 4 === 0) bot.chat('📦 ' + got + '/' + count) }
         else await sleep(300)
@@ -3607,7 +4063,11 @@ look         → args:["direction"]               — посмотреть в н
       const bType = mcData.blocksByName[bName]; if (!bType) return bot.chat('❌ "' + bName + '" неизвестен')
       const blk = bot.findBlock({ matching: bType.id, maxDistance: 100 }); if (!blk) return bot.chat('❌ Нет рядом!')
       fullStop(); MODE = 'collect'; bot.chat('🌲 ' + count + '× ' + bName + '...')
+      const collectTimeout = setTimeout(() => {
+        if (MODE === 'collect') { MODE = null; pfStop(); bot.chat('⏰ Таймаут сбора, отменяю.') }
+      }, 30000)
       bot.collectBlock.collect(blk, { count }, err => {
+        clearTimeout(collectTimeout)
         if (MODE === 'collect') MODE = null
         bot.chat(err ? '❌ ' + err.message : '✅ ' + count + '× ' + bName + '!')
       }); return
