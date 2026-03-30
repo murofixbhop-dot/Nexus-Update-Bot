@@ -104,6 +104,76 @@ const FARM_BLUEPRINTS = {
   })(),
 }
 
+const BUILDING_BLUEPRINTS = {
+  дом: (() => {
+    const b = []
+    for (let x = 0; x < 7; x++)
+      for (let z = 0; z < 7; z++) {
+        b.push({ dx: x, dy: 0, dz: z, block: 'cobblestone' })
+      }
+    for (let x = 1; x < 6; x++)
+      for (let z = 1; z < 6; z++) {
+        b.push({ dx: x, dy: 1, dz: z, block: 'air' })
+        b.push({ dx: x, dy: 2, dz: z, block: 'air' })
+        b.push({ dx: x, dy: 3, dz: z, block: 'air' })
+      }
+    for (let x = 1; x < 6; x++)
+      for (let z = 1; z < 6; z++) {
+        b.push({ dx: x, dy: 4, dz: z, block: 'oak_planks' })
+      }
+    for (let z = 1; z < 6; z++) {
+      b.push({ dx: 0, dy: 1, dz: z, block: 'oak_log' })
+      b.push({ dx: 6, dy: 1, dz: z, block: 'oak_log' })
+      b.push({ dx: 0, dy: 2, dz: z, block: 'oak_log' })
+      b.push({ dx: 6, dy: 2, dz: z, block: 'oak_log' })
+      b.push({ dx: 0, dy: 3, dz: z, block: 'oak_log' })
+      b.push({ dx: 6, dy: 3, dz: z, block: 'oak_log' })
+      b.push({ dx: 0, dy: 4, dz: z, block: 'oak_planks' })
+      b.push({ dx: 6, dy: 4, dz: z, block: 'oak_planks' })
+    }
+    for (let x = 1; x < 6; x++) {
+      b.push({ dx: x, dy: 1, dz: 0, block: 'oak_log' })
+      b.push({ dx: x, dy: 2, dz: 0, block: 'oak_log' })
+      b.push({ dx: x, dy: 3, dz: 0, block: 'oak_log' })
+      b.push({ dx: x, dy: 4, dz: 0, block: 'oak_planks' })
+    }
+    b.push({ dx: 3, dy: 1, dz: 0, block: 'air' })
+    b.push({ dx: 3, dy: 2, dz: 0, block: 'air' })
+    b.push({ dx: 3, dy: 3, dz: 0, block: 'air' })
+    return b
+  })(),
+
+  стена: (() => {
+    const b = []
+    for (let x = 0; x < 11; x++)
+      for (let y = 0; y < 5; y++)
+        b.push({ dx: x, dy: y, dz: 0, block: 'cobblestone' })
+    return b
+  })(),
+
+  башня: (() => {
+    const b = []
+    for (let y = 0; y < 15; y++) {
+      b.push({ dx: 0, dy: y, dz: 0, block: 'stone' })
+      b.push({ dx: 3, dy: y, dz: 0, block: 'stone' })
+      b.push({ dx: 0, dy: y, dz: 3, block: 'stone' })
+      b.push({ dx: 3, dy: y, dz: 3, block: 'stone' })
+    }
+    for (let x = 1; x < 3; x++)
+      for (let z = 1; z < 3; z++)
+        b.push({ dx: x, dy: 0, dz: z, block: 'cobblestone' })
+    return b
+  })(),
+
+  мост: (() => {
+    const b = []
+    for (let z = 0; z < 21; z++)
+      for (let x = 0; x < 3; x++)
+        b.push({ dx: x, dy: 0, dz: z, block: 'oak_planks' })
+    return b
+  })(),
+}
+
 const POTION_RECIPES = {
   силы: 'blaze_powder', регенерации: 'ghast_tear', скорости: 'sugar',
   прыжка: 'rabbit_foot', огня: 'magma_cream', ночного_зрения: 'golden_carrot',
@@ -269,6 +339,7 @@ function createBot () {
   // ─── ПРОЧЕЕ ──────────────────────────────────────────────────────
   let eatingNow    = false
   let patrolPoints = []
+  let attentionLocked = false  // Блокировка взгляда за игроками/предметами при действиях
 
   // ─── ПВП СТРАФ / УВОРОТ ──────────────────────────────────────────
   let strafeDir       = 1
@@ -276,10 +347,6 @@ function createBot () {
   let strafeChangeCd  = 0
 
   // ─── WATER DROP ──────────────────────────────────────────────────
-  let wdLastGroundY   = null   // Y последней твёрдой земли
-  let wdFallStart     = null   // Y откуда начали падать
-  let wdActive        = false  // сейчас выполняем water drop
-  let wdCooldown      = 0      // тики до следующего разрешённого drop
   let patrolIdx    = 0
   let savedPoints  = {}
   let basePos      = null
@@ -287,38 +354,160 @@ function createBot () {
   let boatTX = null, boatTZ = null
   let lastCmdTime  = Date.now()
 
+  // ════════════════════════════════════════════════════════════════════
+  //  AI ПЛАНИРОВЩИК — многоходовые планы
+  // ════════════════════════════════════════════════════════════════════
+  let currentPlan = null
+  let currentPlanStep = 0
+  let planExecutionActive = false
+  let planInterrupted = false
+  let planInterruptReason = ''
+  let actionHistory = []
+  let lastPlanResult = null
+  let lastPlanError = null
+
+  const AI_SYSTEM_PLANNER = `Ты — ИИ планировщик для Minecraft бота. Твоя задача — составлять многоходовые планы для достижения целей.
+
+ФОРМАТ ОТВЕТА (ВСЕГДА JSON):
+{
+  "plan": [
+    {"step": 1, "action": "collect", "args": ["oak_log", 8], "reasoning": "Нужны доски для верстака"},
+    {"step": 2, "action": "craft", "args": ["crafting_table", 1], "reasoning": "Верстак для каменных инструментов"},
+    {"step": 3, "action": "collect", "args": ["cobblestone", 16], "reasoning": "Камень для кирки"},
+    ...
+  ],
+  "estimated_steps": 5,
+  "final_goal": "каменная кирка"
+}
+
+ПРАВИЛА ПЛАНИРОВАНИЯ:
+1. План должен быть РЕАЛИСТИЧНЫМ — учитывай что бот может умереть
+2. Каждый шаг должен логически следовать из предыдущего
+3. Включай проверки: если нет X, то сначала добудь X
+4. План не должен превышать 20 шагов
+5. Примеры целей:
+   - "доберись до железа" → дерево → верстак → камень → железо
+   - "построй дом" → дерево → доски → верстак → инструменты → стройка
+   - "выживи" → еда → жильё → инструменты → броня
+
+ПОРЯДОК ТЕХНОЛОГИЙ Minecraft:
+дерево → верстак (4 доски) → деревянная кирка → камень (для каменной кирки) → железо → алмазы
+
+СПИСОК ДОСТУПНЫХ КОМАНД:
+- collect(block, count) — добыть блоки
+- craft(item, count) — крафт
+- smelt(item, count) — плавка
+- attack(target) — атака
+- goto_player() — идти к игроку
+- equip_armor() — надеть броню
+- eat() — поесть
+- sleep()/wake() — спать/проснуться
+- chest_open/chest_give — работа с сундуками
+- toss_item(item, count) — выбросить
+- say() — сказать
+
+НАЧНИ ПЛАНИРОВАНИЕ!`
+
+  // ════════════════════════════════════════════════════════════════════
+  //  ДЕРЕВО ТЕХНОЛОГИЙ MINECRAFT
+  //  Определяет прогрессию инструментов и ресурсов
+  // ════════════════════════════════════════════════════════════════════
+  const TECH_TREE = {
+    tiers: {
+      wood: {
+        name: 'Деревянный',
+        tools: ['wooden_pickaxe', 'wooden_axe', 'wooden_sword', 'wooden_shovel'],
+        requires: { blocks: ['oak_log'], crafted: [] }
+      },
+      stone: {
+        name: 'Каменный',
+        tools: ['stone_pickaxe', 'stone_axe', 'stone_sword', 'stone_shovel'],
+        requires: { blocks: ['cobblestone'], crafted: ['crafting_table'] }
+      },
+      iron: {
+        name: 'Железный',
+        tools: ['iron_pickaxe', 'iron_axe', 'iron_sword', 'iron_shovel'],
+        requires: { blocks: ['iron_ore'], crafted: ['crafting_table'] }
+      },
+      diamond: {
+        name: 'Алмазный',
+        tools: ['diamond_pickaxe', 'diamond_axe', 'diamond_sword', 'diamond_shovel'],
+        requires: { blocks: ['diamond'], crafted: ['crafting_table', 'iron_ingot'] }
+      },
+      netherite: {
+        name: 'Незеритовый',
+        tools: ['netherite_pickaxe', 'netherite_axe', 'netherite_sword', 'netherite_shovel'],
+        requires: { blocks: ['netherite_scrap'], crafted: ['crafting_table', 'diamond_tools'] }
+      }
+    },
+
+    craftingBench: {
+      name: 'Верстак',
+      recipe: { oak_planks: 4 },
+      description: 'Нужен для крафта каменных и железных инструментов'
+    },
+
+    survivalPriority: [
+      { goal: 'собрать еду', steps: ['collect oak_log 4', 'craft oak_planks 4', 'craft crafting_table 1', 'place crafting_table', 'craft wooden_axe 1', 'collect oak_log 8', 'craft oak_planks 16', 'craft wooden_pickaxe 1', 'collect cobblestone 16', 'craft stone_pickaxe 1', 'collect coal_ore 8', 'smelt coal 4'] },
+      { goal: 'построить дом', steps: ['collect oak_log 32', 'craft oak_planks 64', 'craft crafting_table 1', 'place crafting_table', 'craft wooden_pickaxe 1', 'collect cobblestone 64', 'craft stone_pickaxe 1', 'place cobblestone 64 (wall)', 'place oak_planks 32 (floor)'] },
+      { goal: 'получить железо', steps: ['collect oak_log 8', 'craft oak_planks 8', 'craft crafting_table 1', 'place crafting_table', 'craft wooden_pickaxe 1', 'collect cobblestone 32', 'craft stone_pickaxe 1', 'collect iron_ore 16', 'smelt iron_ingot 8'] },
+      { goal: 'получить алмазы', steps: ['collect oak_log 8', 'craft oak_planks 8', 'craft crafting_table 1', 'place crafting_table', 'craft wooden_pickaxe 1', 'collect cobblestone 32', 'craft stone_pickaxe 1', 'collect iron_ore 16', 'smelt iron_ingot 8', 'craft iron_pickaxe 1', 'collect diamond_ore 8', 'smelt diamond 4'] }
+    ],
+
+    getNextTier: function (currentTier) {
+      const order = ['wood', 'stone', 'iron', 'diamond', 'netherite']
+      const idx = order.indexOf(currentTier)
+      return idx >= 0 && idx < order.length - 1 ? order[idx + 1] : null
+    },
+
+    getRequiredFor: function (tier) {
+      return this.tiers[tier]?.requires || null
+    }
+  }
+
   // ─── AI ──────────────────────────────────────────────────────────
   const AI_SYSTEM = `Ты управляешь Minecraft ботом. Отвечай ТОЛЬКО на русском.
 
 СТРОГИЙ ФОРМАТ ОТВЕТА — ОБЯЗАТЕЛЬНО включай JSON в каждом ответе:
 Текст ответа {"cmd":"КОМАНДА","args":[аргументы]}
 
-Или на двух строках:
-Текст ответа
-{"cmd":"КОМАНДА","args":[аргументы]}
-
 НИКОГДА не отвечай без JSON! Даже на "привет" добавь {"cmd":"say","args":[]}.
 
-СПИСОК КОМАНД:
+  СПИСОК КОМАНД:
 say          → args:[]                          — только ответить
 stop         → args:[]                          — остановиться
 goto_player  → args:[]                          — подойти к игроку
 follow       → args:["ИМЯ"]                     — следовать
-collect      → args:["block_en", число]         — ИДТИ и добывать блок
-craft        → args:["item_en", число]          — крафтить
+collect      → args:["block_en", число]         — ИДТИ и добывать блок (руды, дерево, камень и тд)
+craft        → args:["item_en", число]          — крафтить предмет
 craft_give   → args:["item_en", число]          — крафтить и отдать
-attack       → args:["имя"]                     — атаковать (любого: моб, игрок)
+place        → args:["block_en", "x", "y", "z"] — поставить блок на координаты
+place_near   → args:["block_en", "direction"]  — поставить блок рядом (front/back/left/right/up/down)
+attack       → args:["имя"]                     — атаковать (моб, игрок)
+attack_stop  → args:[]                          — прекратить атаку
+equip_weapon → args:["тип"]                     — экипировать оружие (sword/axe/bow/crossbow/trident)
+use_item     → args:[]                          — использовать предмет в руке
+goto         → args:["x", "y", "z"]            — идти к координатам
+goto_nearest → args:["block_en"]               — идти к ближайшему блоку
+find_structure → args:["type"]                  — искать структуру (stronghold/nether_portal/desert_temple/jungle_temple/village/monument/mansion)
 equip_armor  → args:[]                          — надеть броню
-status       → args:[]                          — статус/инвентарь
+status       → args:[]                          — статус/инвентарь/позиция
 sleep        → args:[]                          — лечь спать
 wake         → args:[]                          — проснуться
 eat          → args:[]                          — поесть
-smelt        → args:["item_en", число]          — переплавить
+smelt        → args:["item_en", число]          — переплавить в печи
 chest_open   → args:[]                          — посмотреть сундук рядом
-chest_give   → args:["item_en_или_всё", число]  — взять из сундука и принести ТОЛЬКО когда явно просят принести/дать из сундука
-toss_item    → args:["item_en", число]          — выбросить предмет из инвентаря (когда просят дать/отдать/выбросить/выкинуть)
+chest_put    → args:["item_en", число]         — положить предметы в сундук
+chest_take   → args:["item_en", число]         — взять предметы из сундука
+toss_item    → args:["item_en", число]          — выбросить предмет
 auto_armor   → args:[]                          — включить/выключить автоброню
 help         → args:[]                          — помощь
+plan_start   → args:["цель"]                    — создать и выполнить многоходовый план
+plan_stop    → args:[]                          — остановить текущий план
+plan_status  → args:[]                          — показать статус плана
+interact     → args:["block_en"]                — взаимодействовать с блоком (кнопка, рычаг, дверь и тд)
+move         → args:["direction", "blocks"]     — двигаться (forward/back/left/right/jump/sprint) на N блоков
+look         → args:["direction"]               — посмотреть в направлении (up/down/left/right/back)
 
 ПЕРЕВОДЫ (для args, пиши точно как здесь):
 алмаз/алмазы/алмазная руда → diamond_ore
@@ -643,6 +832,92 @@ help         → args:[]                          — помощь
     }
   }
 
+  const LADDER_NAMES = ['ladder', 'vine', 'scaffolding']
+  const FENCE_NAMES = ['fence', 'nether_brick_fence', 'glass_pane', 'iron_bars']
+  const CARPET_NAMES = ['carpet', 'wool']
+
+  function tickLadderAndFence () {
+    if (!bot.entity) return
+    if (isWaterDropping || isMining) return
+    if (bot.vehicle) return
+
+    const pos = bot.entity.position
+    const bx = Math.floor(pos.x)
+    const by = Math.floor(pos.y)
+    const bz = Math.floor(pos.z)
+
+    const blockAtFeet = bot.blockAt(new Vec3(bx, by, bz))
+    const blockBelow = bot.blockAt(new Vec3(bx, by - 1, bz))
+    const blockAhead = bot.blockAt(new Vec3(bx, by, bz + 1))
+    const blockAbove = bot.blockAt(new Vec3(bx, by + 1, bz))
+
+    if (blockAtFeet && LADDER_NAMES.some(n => blockAtFeet.name.includes(n))) {
+      if (!bot.controlState.jump) {
+        bot.setControlState('forward', false)
+        bot.setControlState('sneak', true)
+        bot.setControlState('jump', false)
+        bot.setControlState('forward', true)
+        setTimeout(() => {
+          bot.setControlState('sneak', false)
+        }, 500)
+      }
+    }
+
+    if (blockBelow && blockBelow.name.includes('slime_block')) {
+      if (pos.y - Math.floor(pos.y) < 0.5) {
+        bot.setControlState('jump', true)
+        bot.setControlState('sneak', true)
+      }
+    }
+
+    if (blockAhead && FENCE_NAMES.some(n => blockAhead.name.includes(n))) {
+      const carpetOnFence = bot.blockAt(new Vec3(bx, by, bz + 1))
+      if (carpetOnFence && CARPET_NAMES.some(n => carpetOnFence.name.includes(n))) {
+        if (pos.z - bz > 0.3) {
+          bot.setControlState('jump', true)
+          bot.setControlState('forward', true)
+          setTimeout(() => {
+            bot.setControlState('jump', false)
+            bot.setControlState('forward', false)
+          }, 300)
+        }
+      }
+    }
+
+    if (blockAbove && LADDER_NAMES.some(n => blockAbove.name.includes(n))) {
+      if (!bot.controlState.jump && pos.y - Math.floor(pos.y) > 0.7) {
+        bot.setControlState('jump', true)
+        setTimeout(() => bot.setControlState('jump', false), 200)
+      }
+    }
+  }
+
+  function tickClimbLadder () {
+    if (!bot.entity) return
+    if (bot.vehicle) return
+
+    const pos = bot.entity.position
+    const bx = Math.floor(pos.x)
+    const by = Math.floor(pos.y)
+    const bz = Math.floor(pos.z)
+
+    for (let dy = 0; dy <= 2; dy++) {
+      const block = bot.blockAt(new Vec3(bx, by + dy, bz))
+      if (block && LADDER_NAMES.some(n => block.name.includes(n))) {
+        const dist = Math.abs(pos.y - (by + dy + 0.5))
+        if (dist < 0.5 && !bot.isInWater) {
+          bot.setControlState('sneak', true)
+          bot.setControlState('forward', true)
+          setTimeout(() => {
+            bot.setControlState('forward', false)
+            bot.setControlState('sneak', false)
+          }, 500)
+          return
+        }
+      }
+    }
+  }
+
   // ════════════════════════════════════════════════════════════════
   //  УТИЛИТЫ
   // ════════════════════════════════════════════════════════════════
@@ -693,20 +968,286 @@ help         → args:[]                          — помощь
       const best = candidates[0]
       const equipped = bot.inventory.slots[info.slot]
       if (equipped) {
-        // Не меняем если надетая броня того же или лучшего тира
         const equippedTier = ARMOR_TIERS.findIndex(t => equipped.name.includes(t))
         const bestTier     = ARMOR_TIERS.findIndex(t => best.name.includes(t))
-        // Меньший индекс = лучший тир. Если надетое не хуже best — пропускаем
         const eIdx = equippedTier === -1 ? 99 : equippedTier
         const bIdx = bestTier     === -1 ? 99 : bestTier
-        if (eIdx <= bIdx) continue  // надетое лучше или равно — не трогаем
+        if (eIdx <= bIdx) continue
       }
       try { await bot.equip(best, info.equipSlot) } catch (_) {}
       await sleep(100)
     }
   }
 
+  async function checkAndRepairArmor () {
+    if (!mcData) return
+    const DURABILITY_THRESHOLD = 0.3
+
+    for (const [pieceName, info] of Object.entries(ARMOR_PIECES)) {
+      const equipped = bot.inventory.slots[info.slot]
+      if (!equipped) continue
+
+      try {
+        const maxDur = equipped.maxDurability || 100
+        const currentDur = maxDur - (equipped.durability || 0)
+        const durRatio = currentDur / maxDur
+
+        if (durRatio < DURABILITY_THRESHOLD) {
+          console.log('🛡️ Броня ' + equipped.name + ' изношена: ' + Math.round(durRatio * 100) + '%')
+
+          const inv = bot.inventory.items()
+          const candidates = inv.filter(i => i.name.includes(pieceName.split('')[0]) &&
+            info.keywords.some(kw => i.name.includes(kw)) && i.durability !== undefined)
+
+          const betterCandidates = candidates.filter(i => {
+            const iDur = (i.maxDurability || 100) - (i.durability || 0)
+            const iRatio = iDur / (i.maxDurability || 100)
+            return iRatio > durRatio && i.name !== equipped.name
+          })
+
+          betterCandidates.sort((a, b) => {
+            const aDur = ((a.maxDurability || 100) - (a.durability || 0)) / (a.maxDurability || 100)
+            const bDur = ((b.maxDurability || 100) - (b.durability || 0)) / (b.maxDurability || 100)
+            return bDur - aDur
+          })
+
+          if (betterCandidates.length > 0) {
+            try { await bot.equip(betterCandidates[0], info.equipSlot) } catch (_) {}
+            console.log('🛡️ Заменена на ' + betterCandidates[0].name)
+          }
+        }
+      } catch (e) {
+        console.log('Armor check error:', e.message)
+      }
+    }
+  }
+
   setInterval(() => { if (autoArmor && !combatTarget) equipBestArmor() }, 10000)
+  setInterval(() => { if (autoArmor && !combatTarget) checkAndRepairArmor() }, 15000)
+
+  // ════════════════════════════════════════════════════════════════════
+  //  АВТОНОМНОЕ ВЫЖИВАНИЕ — мониторинг и автоматические действия
+  // ════════════════════════════════════════════════════════════════════
+  let survivalMode = false
+  let survivalGoals = []
+  let currentSurvivalGoal = null
+  let lastSurvivalCheck = 0
+
+  const SURVIVAL_PRIORITIES = [
+    { check: () => bot.health < 8, action: 'heal', reason: 'Мало HP!' },
+    { check: () => bot.food < 10, action: 'eat', reason: 'Мало еды!' },
+    { check: () => !hasGoodArmor(), action: 'find_armor', reason: 'Нужна броня!' },
+    { check: () => !hasWeapon(), action: 'find_weapon', reason: 'Нужно оружие!' },
+    { check: () => !hasTool(), action: 'find_tool', reason: 'Нужны инструменты!' },
+    { check: () => !isPreparedForNight(), action: 'find_shelter', reason: 'Нужно укрытие!' }
+  ]
+
+  function hasGoodArmor () {
+    let hasArmor = false
+    for (const slot of [5, 6, 7, 8]) {
+      const item = bot.inventory.slots[slot]
+      if (item && item.durability !== undefined) {
+        const durRatio = ((item.maxDurability || 100) - (item.durability || 0)) / (item.maxDurability || 100)
+        if (durRatio > 0.3) hasArmor = true
+      }
+    }
+    return hasArmor
+  }
+
+  function hasWeapon () {
+    const weapon = bot.inventory.items().find(i => WEAPON_PRIO.some(w => i.name.includes(w)))
+    return !!weapon
+  }
+
+  function hasTool () {
+    const tool = bot.inventory.items().find(i => i.name.includes('pickaxe') || i.name.includes('axe') || i.name.includes('shovel'))
+    return !!tool
+  }
+
+  function isPreparedForNight () {
+    if (bot.isSleeping) return true
+    const beds = bot.findBlocks({ matching: b => bot.isABed(b), maxDistance: 16, count: 3 })
+    return beds.length > 0
+  }
+
+  async function tickSurvival () {
+    if (!survivalMode) return
+    if (planExecutionActive) return
+    if (attentionLocked) return
+    if (Date.now() - lastSurvivalCheck < 5000) return
+    lastSurvivalCheck = Date.now()
+
+    for (const priority of SURVIVAL_PRIORITIES) {
+      if (priority.check()) {
+        console.log('🎯 Survival: ' + priority.reason)
+        if (priority.action === 'eat') await tryAutoEat()
+        else if (priority.action === 'find_armor' || priority.action === 'find_weapon' || priority.action === 'find_tool') {
+          await createAndExecutePlan('собрать базовые инструменты и броню', 'system')
+        }
+        else if (priority.action === 'find_shelter') {
+          await trySleep('system').catch(() => {})
+        }
+        return
+      }
+    }
+  }
+
+  async function tryAutoEat () {
+    const food = bot.inventory.items().find(i => FOODS.has(i.name))
+    if (!food) return
+    try {
+      await bot.equip(food, 'hand')
+      await bot.consume()
+      console.log('🍖 Auto-ate: ' + food.name)
+    } catch (e) {}
+  }
+
+  // ════════════════════════════════════════════════════════════════════
+  //  IDLE BEHAVIOR — что делать когда нечего делать
+  // ════════════════════════════════════════════════════════════════════
+  let idleMode = false
+  let idleActions = []
+  let currentIdleAction = 0
+
+  const IDLE_ACTIVITIES = [
+    { name: 'explore', action: exploreNearby },
+    { name: 'collect_flowers', action: collectFlowers },
+    { name: 'look_around', action: lookAround },
+    { name: 'check_chests', action: checkNearbyChests }
+  ]
+
+  async function tickIdle () {
+    if (survivalMode) return
+    if (planExecutionActive) return
+    if (attentionLocked) return
+    if (MODE !== null && MODE !== 'idle') return
+
+    if (bot.food < 15) {
+      await tryAutoEat()
+      return
+    }
+
+    if (combatTarget) return
+
+    if (currentIdleAction >= idleActions.length) {
+      idleActions = [...IDLE_ACTIVITIES].sort(() => Math.random() - 0.5)
+      currentIdleAction = 0
+    }
+
+    const activity = idleActions[currentIdleAction]
+    if (activity) {
+      MODE = 'idle'
+      try {
+        await activity.action()
+      } catch (e) {
+        console.log('Idle activity error:', e.message)
+      }
+      MODE = null
+      currentIdleAction++
+    }
+  }
+
+  async function exploreNearby () {
+    const directions = [
+      new Vec3(50, 0, 0), new Vec3(-50, 0, 0),
+      new Vec3(0, 0, 50), new Vec3(0, 0, -50)
+    ]
+    const dir = directions[Math.floor(Math.random() * directions.length)]
+    const target = bot.entity.position.plus(dir)
+
+    bot.setControlState('forward', true)
+    await sleep(2000)
+    bot.setControlState('forward', false)
+    await sleep(500)
+
+    bot.look(Math.atan2(-dir.x, -dir.z), 0, false).catch(() => {})
+    await sleep(1000)
+  }
+
+  async function collectFlowers () {
+    const flowers = bot.findBlocks({
+      matching: b => b.name.includes('tall_flower') || b.name === 'poppy' || b.name === 'dandelion',
+      maxDistance: 16, count: 4
+    })
+    if (flowers.length === 0) return
+
+    for (const pos of flowers.slice(0, 3)) {
+      try {
+        const blk = bot.blockAt(pos)
+        if (blk) {
+          await bot.lookAt(pos.offset(0.5, 0.5, 0.5), true)
+          await bot.dig(blk)
+          await sleep(300)
+        }
+      } catch (e) {}
+    }
+  }
+
+  async function lookAround () {
+    const baseYaw = bot.entity.yaw || 0
+    for (let i = 0; i < 3; i++) {
+      await bot.look(baseYaw + (i % 2 === 0 ? 0.5 : -0.5), 0.2, false)
+      await sleep(500)
+    }
+    await bot.look(baseYaw, 0, false).catch(() => {})
+  }
+
+  async function checkNearbyChests () {
+    const chests = bot.findBlocks({
+      matching: b => b.name.includes('chest'),
+      maxDistance: 16, count: 2
+    })
+    if (chests.length === 0) return
+
+    const chest = chests[0]
+    try {
+      const bl = bot.blockAt(chest)
+      if (bl) {
+        await bot.lookAt(chest.offset(0.5, 0.5, 0.5), true)
+        await sleep(200)
+        await bot.openBlock(bl)
+        await sleep(500)
+        try { await bl.close() } catch (_) {}
+      }
+    } catch (e) {}
+  }
+
+  // ════════════════════════════════════════════════════════════════════
+  //  SMART INVENTORY MANAGEMENT
+  // ════════════════════════════════════════════════════════════════════
+  const PRIORITY_ITEMS = new Set([
+    'diamond', 'iron_ingot', 'gold_ingot', 'emerald', 'netherite_scrap',
+    'iron_pickaxe', 'diamond_pickaxe', 'netherite_pickaxe',
+    'iron_sword', 'diamond_sword', 'netherite_sword',
+    'bow', 'crossbow', 'shield',
+    'water_bucket', 'lava_bucket',
+    'enchanted_golden_apple', 'golden_apple',
+    'cookie', 'bread', 'cooked_beef'
+  ])
+
+  const LOW_PRIORITY_ITEMS = new Set([
+    'cobblestone', 'dirt', 'sand', 'gravel', 'oak_log', 'birch_log', 'spruce_log'
+  ])
+
+  async function manageInventory () {
+    const inv = bot.inventory.items()
+    const fullSlots = inv.filter(i => i && i.count >= 64)
+
+    if (fullSlots.length > 5) {
+      for (const item of fullSlots) {
+        if (LOW_PRIORITY_ITEMS.has(item.name)) {
+          try {
+            await bot.toss(item.type, null, 32)
+            console.log('📦 Tossed excess: ' + item.name)
+          } catch (e) {}
+        }
+      }
+    }
+  }
+
+  setInterval(() => { if (survivalMode) tickSurvival() }, 8000)
+  setInterval(() => { tickIdle() }, 12000)
+  setInterval(() => { manageInventory() }, 20000)
 
   // ─── БЕЗОПАСНОСТЬ ПРЫЖКА ─────────────────────────────────────────
   function fallDepthAt (pos) {
@@ -784,11 +1325,14 @@ help         → args:[]                          — помощь
   let smoothCurPos = null       // текущая интерполированная позиция
 
   // Плавный взгляд на ближайшего игрока (только поворот головы, не движение)
+  const BUSY_MODES = ['farm','collect','dig','build','craft','smelt','chest','guard','patrol','bodyguard','goto','follow','boat','afk','attack','sleep','eat','recipe','plan']
+
   setInterval(() => {
     if (!bot.entity || !bot.entities) return
-    // Не смотрим во время: боя, water drop, добычи, строительства
-    const busyMode = ['farm','collect','dig','build'].includes(MODE)
-    if (combatTarget || isWaterDropping || isMining || busyMode || MODE === 'afk') {
+    if (attentionLocked || combatTarget || isWaterDropping || isMining) {
+      smoothLookTarget = null; smoothCurPos = null; return
+    }
+    if (BUSY_MODES.includes(MODE)) {
       smoothLookTarget = null; smoothCurPos = null; return
     }
     let nearest = null; let nearestDist = 12
@@ -802,13 +1346,10 @@ help         → args:[]                          — помощь
     if (!nearest) smoothCurPos = null
   }, 30)
 
-  // Плавный взгляд на игрока — вызывается каждый physicsTick
-  // Интерполируем ПОЗИЦИЮ между текущей точкой взгляда и целью.
-  // bot.lookAt сам считает углы — никаких ручных формул pitch/yaw.
   function tickSmoothLook () {
-    // Не смотрим на игрока при добыче, строительстве, water drop
-    const busy = isMining || isWaterDropping || ['farm','collect','dig','build'].includes(MODE)
-    if (!smoothLookTarget || combatTarget || busy) return
+    if (attentionLocked || combatTarget || isWaterDropping || isMining) return
+    if (BUSY_MODES.includes(MODE)) return
+    if (!smoothLookTarget) return
 
     // Инициализируем при первом вызове
     if (!smoothCurPos) smoothCurPos = smoothLookTarget.clone()
@@ -888,14 +1429,42 @@ help         → args:[]                          — помощь
     tickWaterDrop()
     tickWater(); tickBoat(); tickShieldAuto()
     tickFollow(); tickGoto(); tickGuard(); tickBodyguard(); tickPatrol(); tickAfk(); tickShieldHold()
+    tickLadderAndFence(); tickClimbLadder()
     if (combatTimer && physTick % 3 === 0 && !isWaterDropping) doCombatStep()
 
   })
 
-  // ─── WATER DROP ─────────────────────────────────────────────────
-  // Автоматически выливает воду при падении > 8 блоков
+  // ════════════════════════════════════════════════════════════════════
+  //  УЛУЧШЕННЫЙ WATER DROP + CUSHION BLOCKS (MLG)
+  //  Срабатывает при падении > 4 блоков
+  //  Приоритет: вода > cushion blocks (hay_bale, bed, etc)
+  // ════════════════════════════════════════════════════════════════════
+
+  const CUSHION_BLOCKS = [
+    { name: 'hay_block',      damageReduction: 9, priority: 1 },
+    { name: 'bed',            damageReduction: 9, priority: 2 },
+    { name: 'soul_sand',      damageReduction: 5, priority: 3 },
+    { name: 'slime_block',    damageReduction: 10, priority: 4 },
+    { name: 'honey_block',    damageReduction: 8, priority: 5 },
+    { name: 'cobweb',         damageReduction: 6, priority: 6 },
+  ]
+
   let wdPrevY     = null
-  let wdFallTicks = 0   // сколько тиков подряд падаем
+  let wdFallTicks = 0
+  let wdFallStart = null
+  let wdActive    = false
+  let wdCooldown  = 0
+  let _wdSavedYaw = 0
+  let cushionBlockUsed = null
+
+  function getCushionBlockInInventory () {
+    for (const cb of CUSHION_BLOCKS) {
+      const item = bot.inventory.items().find(i => i && i.name === cb.name)
+      if (item) return { item, ...cb }
+    }
+    return null
+  }
+
   function tickWaterDrop () {
     if (!bot.entity) return
     if (wdCooldown > 0) { wdCooldown--; return }
@@ -908,30 +1477,25 @@ help         → args:[]                          — помощь
       wdFallStart  = null
       wdFallTicks  = 0
       wdPrevY      = pos.y
+      cushionBlockUsed = null
       return
     }
 
-    // Считаем тики падения (Y убывает)
     if (wdPrevY !== null && pos.y < wdPrevY - 0.01) {
       wdFallTicks++
       if (wdFallStart === null) wdFallStart = wdPrevY
     } else if (wdFallTicks > 0 && pos.y > (wdPrevY || 0) + 0.5) {
-      // Y резко выросло (прыжок вверх) — сбрасываем
       wdFallTicks = 0
       wdFallStart = null
     }
-    // Не сбрасываем при небольшом замедлении (плавное падение)
     wdPrevY = pos.y
 
-    // Нужно хотя бы 6 тиков падения чтобы исключить прыжки
     if (wdFallTicks < 6) return
     if (wdFallStart === null) return
 
-    // Сколько уже упали от начала падения
     const alreadyFell = wdFallStart - pos.y
     if (alreadyFell < 3) return
 
-    // Ищем землю под ногами
     let groundY = pos.y
     for (let d = 1; d <= 80; d++) {
       const bl = bot.blockAt(new Vec3(
@@ -947,83 +1511,136 @@ help         → args:[]                          — помощь
 
     const totalFall = wdFallStart - groundY
     const distToGround = pos.y - groundY
-    // Drop если суммарное падение > 8 И до земли ещё > 2
-    if (totalFall < 8) return
+    // Срабатываем при падении > 4 блоков (было 8)
+    if (totalFall < 4) return
     if (distToGround < 2) return
 
-    const wb = bot.inventory.items().find(i => i.name === 'water_bucket')
-    if (!wb) return
+    console.log('💧 MLG triggered! Fall: ' + totalFall.toFixed(1) + ' blocks')
 
-    console.log('💧 TRIGGERING water drop!')
-    // взгляд вниз — устанавливается через entity.pitch в physicsTick
+    const wb = bot.inventory.items().find(i => i.name === 'water_bucket')
+    const cushion = getCushionBlockInInventory()
+
+    if (!wb && !cushion) {
+      console.log('❌ No water bucket or cushion blocks!')
+      return
+    }
+
     wdActive = true
-    doWaterDrop().finally(() => {
+    doWaterDrop(!!wb, !!cushion).finally(() => {
       wdActive    = false
       wdCooldown  = 60
       wdFallStart = null
       wdFallTicks = 0
       wdPrevY     = null
+      cushionBlockUsed = null
     })
   }
 
-  // Хранит yaw для WD чтобы physicsTick мог поддерживать взгляд вниз
-  let _wdSavedYaw = 0
-
-  // MLG water drop
-  async function doWaterDrop () {
-    // ВАЖНО: фиксируем yaw ДО установки isWaterDropping
-    // иначе physicsTick использует _wdSavedYaw=0 (смотрит на восток!)
+  async function doWaterDrop (hasWater, hasCushion) {
     _wdSavedYaw = bot.entity.yaw
-    isWaterDropping = true  // теперь physicsTick будет держать взгляд вниз с правильным yaw
-    try {
-      const wb = bot.inventory.items().find(i => i.name === 'water_bucket')
-      if (!wb) return
+    isWaterDropping = true
 
-      // Убираем щит — иначе activateItem() активирует offhand (щит), не ведро
+    try {
       if (shieldUp) { bot.deactivateItem(); shieldUp = false }
       await sleep(20)
 
-      // Экипируем ведро в main hand
-      await bot.equip(wb, 'hand')
-      await sleep(60)
+      if (hasWater) {
+        await doWaterBucketMLG()
+      } else if (hasCushion) {
+        await doCushionBlockMLG()
+      }
 
-      // Смотрим вниз: -PI/2 = строго вниз (официальная дока mineflayer)
-      // force=true = синхронно, без интерполяции
-      await bot.look(_wdSavedYaw, -Math.PI / 2, true)
-      await sleep(80)  // 2 тика чтобы сервер подтвердил
-
-      // Льём воду (main hand)
-      bot.activateItem()
-      await sleep(200)
-      bot.activateItem()
-
-      // Ждём приземления
       await waitFor(() => bot.entity?.onGround === true, 8000).catch(() => {})
-      await sleep(500)  // вода разливается
+      await sleep(300)
 
-      await pickUpWater()
+      if (hasWater) await pickUpWater()
+      if (cushionBlockUsed) await pickupCushionBlock()
+
       equipBestWeapon()
       if (shieldAuto || combatTarget) { activateOffhand(); shieldUp = true }
     } catch (e) {
-      console.error('WD error:', e.message)
+      console.error('MLG error:', e.message)
       equipBestWeapon()
     } finally {
       isWaterDropping = false
     }
   }
 
-  // Ищет воду рядом и подбирает пустым ведром
+  async function doWaterBucketMLG () {
+    const wb = bot.inventory.items().find(i => i.name === 'water_bucket')
+    if (!wb) return
+
+    await bot.equip(wb, 'hand')
+    await sleep(60)
+
+    await bot.look(_wdSavedYaw, -Math.PI / 2, true)
+    await sleep(80)
+
+    bot.activateItem()
+    await sleep(200)
+    bot.activateItem()
+    console.log('💧 Water placed!')
+  }
+
+  async function doCushionBlockMLG () {
+    const cushionData = getCushionBlockInInventory()
+    if (!cushionData) return
+    const { item, name } = cushionData
+
+    cushionBlockUsed = name
+
+    await bot.equip(item, 'hand')
+    await sleep(60)
+
+    const blockBelow = bot.blockAt(bot.entity.position.offset(0, -0.5, 0))
+    if (blockBelow && blockBelow.name === 'air') {
+      await bot.look(_wdSavedYaw, -Math.PI / 2, true)
+      await sleep(80)
+      try {
+        bot.placeBlock(blockBelow.position, new Vec3(0, 1, 0))
+        console.log('🛡️ Cushion block placed: ' + name)
+        await sleep(200)
+      } catch (e) {
+        console.log('⚠️ Could not place cushion block:', e.message)
+      }
+    }
+  }
+
+  async function pickupCushionBlock () {
+    if (!cushionBlockUsed) return
+    await sleep(500)
+
+    const pos = bot.entity.position
+    const cushionItem = bot.inventory.items().find(i => i && i.name === cushionBlockUsed)
+    if (cushionItem) return
+
+    for (let ox = -1; ox <= 1; ox++) {
+      for (let oz = -1; oz <= 1; oz++) {
+        const bl = bot.blockAt(new Vec3(
+          Math.floor(pos.x) + ox,
+          Math.floor(pos.y) - 1,
+          Math.floor(pos.z) + oz
+        ))
+        if (bl && bl.name === cushionBlockUsed) {
+          try {
+            await bot.lookAt(bl.position.offset(0.5, 0.5, 0.5), true)
+            await sleep(100)
+            try { await bot.dig(bl) } catch (_) {}
+            await sleep(200)
+            console.log('✅ Cushion block picked up')
+            return
+          } catch (e) {}
+        }
+      }
+    }
+  }
+
   async function pickUpWater () {
-    // Ждём появления source-блока (может задержаться на 1-2 тика)
     await sleep(200)
     const emptyBucket = bot.inventory.items().find(i => i.name === 'bucket')
-    if (!emptyBucket) {
-      // Нет пустого ведра = вода не вылилась или уже подобрана
-      return
-    }
+    if (!emptyBucket) return
 
     const p = bot.entity.position
-    // Ищем source water блок рядом (3×3×3)
     let waterBlock = null
     outerLoop:
     for (let dy = 2; dy >= -3; dy--) {
@@ -1043,19 +1660,15 @@ help         → args:[]                          — помощь
       }
     }
 
-    if (!waterBlock) return  // вода не нашлась — ОК
+    if (!waterBlock) return
 
-    // Берём пустое ведро
     await bot.equip(emptyBucket, 'hand').catch(() => {})
     await sleep(50)
-
-    // Смотрим на воду
     await bot.lookAt(waterBlock.position.offset(0.5, 0.5, 0.5), true)
     await sleep(100)
-
-    // Правая кнопка на source water с empty bucket = забрать воду
     try { await bot.activateBlock(waterBlock) } catch (_) { bot.activateItem() }
     await sleep(100)
+    console.log('💧 Water picked up!')
   }
 
   // ─── ВОДА ────────────────────────────────────────────────────────
@@ -2254,6 +2867,231 @@ help         → args:[]                          — помощь
       await giveFromChest(itemN, cnt, fromUser); return
     }
     if (cmd === 'help') { await showHelp(); return }
+
+    if (cmd === 'plan_start') {
+      const goal = args[0] || 'выживать'
+      await createAndExecutePlan(goal, fromUser)
+      return
+    }
+
+    if (cmd === 'plan_stop') {
+      stopCurrentPlan()
+      return
+    }
+
+    if (cmd === 'plan_status') {
+      if (!currentPlan) {
+        bot.chat('📋 Нет активного плана')
+      } else {
+        bot.chat('📋 План: ' + currentPlan.goal + ' | Шаг: ' + (currentPlanStep + 1) + '/' + currentPlan.steps.length)
+      }
+      return
+    }
+
+    if (cmd === 'place' || cmd === 'place_near') {
+      const blockName = args[0]
+      if (!blockName) return bot.chat('❌ Укажи блок!')
+      const aliasNames = BLOCK_ALIASES[blockName] || [blockName]
+      const aliasIds = aliasNames.map(n => mcData.blocksByName[n]).filter(Boolean).map(b => b.id)
+      if (!aliasIds.length) return bot.chat('❌ Неизвестный блок: ' + blockName)
+
+      const item = bot.inventory.items().find(i => i.name === blockName || i.name.includes(blockName))
+      if (!item) return bot.chat('❌ Нет ' + blockName + ' в инвентаре!')
+
+      let targetPos
+      if (cmd === 'place_near') {
+        const dir = args[1] || 'front'
+        const offsets = { front: [0,0,1], back: [0,0,-1], left: [-1,0,0], right: [1,0,0], up: [0,1,0], down: [0,-1,0] }
+        const off = offsets[dir] || offsets.front
+        targetPos = bot.entity.position.offset(off[0], off[1], off[2])
+      } else if (args[1] && args[2] && args[3]) {
+        targetPos = new Vec3(parseFloat(args[1]), parseFloat(args[2]), parseFloat(args[3]))
+      } else {
+        targetPos = bot.entity.position.offset(0, 0, 1)
+      }
+
+      const blockBelow = bot.blockAt(targetPos.offset(0, -1, 0))
+      if (!blockBelow || blockBelow.name === 'air') return bot.chat('❌ Некуда ставить!')
+
+      try {
+        await bot.equip(item, 'hand')
+        await bot.lookAt(targetPos.offset(0.5, 0.5, 0.5), true)
+        await sleep(100)
+        const face = new Vec3(0, -1, 0)
+        await bot.placeBlock(targetPos, face)
+        bot.chat('✅ Поставил ' + blockName)
+      } catch (e) { bot.chat('❌ Ошибка: ' + e.message) }
+      return
+    }
+
+    if (cmd === 'goto' || cmd === 'goto_nearest') {
+      if (cmd === 'goto' && args[0] && args[1] && args[2]) {
+        const x = parseFloat(args[0]), y = parseFloat(args[1]), z = parseFloat(args[2])
+        pfGo(new goals.GoalNear(x, y, z, 2))
+        bot.chat('🏃 Иду к ' + x + ' ' + y + ' ' + z)
+        return
+      }
+      if (cmd === 'goto_nearest' && args[0]) {
+        const blockName = args[0]
+        const aliasNames = BLOCK_ALIASES[blockName] || [blockName]
+        const aliasIds = aliasNames.map(n => mcData.blocksByName[n]).filter(Boolean).map(b => b.id)
+        if (!aliasIds.length) return bot.chat('❌ Неизвестный блок: ' + blockName)
+        const blk = bot.findBlock({ matching: b => b && aliasIds.includes(b.type), maxDistance: 100, count: 1 })
+        if (!blk) return bot.chat('❌ Не найден ' + blockName)
+        pfGo(new goals.GoalNear(blk.position.x, blk.position.y, blk.position.z, 2))
+        bot.chat('🏃 Иду к ближайшему ' + blockName)
+        return
+      }
+      return
+    }
+
+    if (cmd === 'find_structure') {
+      const type = (args[0] || '').toLowerCase()
+      const structures = {
+        nether_portal: ['nether_portal', 'portal'],
+        stronghold: ['end_portal_frame'],
+        desert_temple: ['sandstone', 'blue_terracotta'],
+        jungle_temple: ['cobblestone', 'vine'],
+        village: ['oak_log', 'oak_planks', 'fence'],
+        monument: ['prismarine', 'sea_lantern'],
+        mansion: ['dark_oak_log', 'dark_oak_planks']
+      }
+      const searchFor = structures[type] || ['chest', 'spawner']
+      const found = bot.findBlocks({
+        matching: b => b && searchFor.some(s => b.name.includes(s)),
+        maxDistance: 200, count: 5
+      })
+      if (found.length) {
+        const nearest = found[0]
+        bot.chat('📍 Найдено ' + type + ' в [' + nearest.x + ' ' + nearest.y + ' ' + nearest.z + ']')
+        pfGo(new goals.GoalNear(nearest.x, nearest.y, nearest.z, 2))
+      } else {
+        bot.chat('❌ ' + type + ' не найден в радиусе 200 блоков')
+      }
+      return
+    }
+
+    if (cmd === 'equip_weapon') {
+      const weaponType = (args[0] || 'sword').toLowerCase()
+      let candidates = []
+      if (weaponType === 'sword' || weaponType === 'меч') candidates = WEAPON_PRIO.filter(n => n.includes('sword'))
+      else if (weaponType === 'axe' || weaponType === 'топор') candidates = AXE_PRIO
+      else if (weaponType === 'bow' || weaponType === 'лук') candidates = BOW_PRIO
+      else if (weaponType === 'crossbow' || weaponType === 'арбалет') candidates = ['crossbow']
+      else if (weaponType === 'trident' || weaponType === 'трезубец') candidates = ['trident']
+      else candidates = WEAPON_PRIO
+
+      const weapon = bot.inventory.items().find(i => candidates.some(w => i.name.includes(w)))
+      if (!weapon) return bot.chat('❌ Нет оружия: ' + weaponType)
+      try {
+        await bot.equip(weapon, 'hand')
+        bot.chat('⚔️ Экипирован ' + weapon.name)
+      } catch (e) { bot.chat('❌ ' + e.message) }
+      return
+    }
+
+    if (cmd === 'use_item') {
+      try {
+        bot.activateItem()
+        bot.chat('✅ Использую ' + (bot.heldItem?.name || 'предмет'))
+      } catch (e) { bot.chat('❌ ' + e.message) }
+      return
+    }
+
+    if (cmd === 'interact') {
+      const blockName = (args[0] || '').toLowerCase()
+      const blocks = bot.findBlocks({
+        matching: b => b && b.name.includes(blockName),
+        maxDistance: 5, count: 3
+      })
+      if (!blocks.length) return bot.chat('❌ Нет ' + blockName + ' рядом!')
+      const target = blocks[0]
+      try {
+        await bot.lookAt(target.position.offset(0.5, 0.5, 0.5), true)
+        await sleep(100)
+        await bot.activateBlock(target)
+        bot.chat('✅ Активировал ' + target.name)
+      } catch (e) { bot.chat('❌ ' + e.message) }
+      return
+    }
+
+    if (cmd === 'move') {
+      const direction = (args[0] || 'forward').toLowerCase()
+      const blocks = parseInt(args[1]) || 1
+      const controlMap = { forward: 'forward', back: 'back', left: 'left', right: 'right', jump: 'jump', sprint: 'sprint' }
+      const ctrl = controlMap[direction]
+      if (!ctrl) return bot.chat('❌ Неизвестное направление')
+      bot.setControlState(ctrl, true)
+      if (direction === 'sprint') {
+        bot.setControlState('forward', true)
+        setTimeout(() => { bot.setControlState('forward', false); bot.setControlState('sprint', false) }, blocks * 500)
+      } else if (direction === 'jump') {
+        for (let i = 0; i < blocks; i++) {
+          setTimeout(() => bot.setControlState('jump', true), i * 600)
+          setTimeout(() => bot.setControlState('jump', false), i * 600 + 200)
+        }
+        setTimeout(() => bot.setControlState(ctrl, false), blocks * 600)
+      } else {
+        setTimeout(() => bot.setControlState(ctrl, false), Math.min(blocks * 500, 5000))
+      }
+      bot.chat('🏃 Двигаюсь ' + direction + ' ×' + blocks)
+      return
+    }
+
+    if (cmd === 'look') {
+      const direction = (args[0] || 'forward').toLowerCase()
+      const pitchMap = { up: -0.5, down: 0.5, left: 0, right: 0, back: 0, forward: 0 }
+      const yawOffsets = { left: -0.5, right: 0.5, back: Math.PI, forward: 0 }
+      const pitch = pitchMap[direction] || 0
+      const yawOffset = yawOffsets[direction] || 0
+      const baseYaw = bot.entity.yaw || 0
+      bot.look(baseYaw + yawOffset, pitch, false)
+      bot.chat('👀 Смотрю ' + direction)
+      return
+    }
+
+    if (cmd === 'chest_put' || cmd === 'chest_take') {
+      const itemName = args[0] || ''
+      const count = parseInt(args[1]) || 64
+      if (cmd === 'chest_put') {
+        const item = bot.inventory.items().find(i => i.name.includes(itemName))
+        if (!item) return bot.chat('❌ Нет ' + itemName)
+
+        const chests = bot.findBlocks({ matching: b => b.name.includes('chest'), maxDistance: 5, count: 1 })
+        if (!chests.length) return bot.chat('❌ Нет сундука рядом!')
+        try {
+          const chestBlock = bot.blockAt(chests[0])
+          const chest = await bot.openContainer(chestBlock)
+          await chest.deposit(item.type, null, count)
+          chest.close()
+          bot.chat('✅ Положил ' + count + '× ' + item.name)
+        } catch (e) { bot.chat('❌ ' + e.message) }
+      } else {
+        const chests = bot.findBlocks({ matching: b => b.name.includes('chest'), maxDistance: 5, count: 1 })
+        if (!chests.length) return bot.chat('❌ Нет сундука рядом!')
+        try {
+          const chestBlock = bot.blockAt(chests[0])
+          const chest = await bot.openContainer(chestBlock)
+          const item = chest.containerItems().find(i => i.name.includes(itemName))
+          if (!item) { chest.close(); return bot.chat('❌ Нет ' + itemName + ' в сундуке') }
+          await chest.withdraw(item.type, null, count)
+          chest.close()
+          bot.chat('✅ Взял ' + count + '× ' + item.name)
+        } catch (e) { bot.chat('❌ ' + e.message) }
+      }
+      return
+    }
+
+    if (cmd === 'attack_stop') {
+      if (combatTarget) {
+        combatTarget = null
+        bot.clearControlStates()
+        bot.chat('⚔️ Атака остановлена')
+      } else {
+        bot.chat('⚔️ Никого не атакую')
+      }
+      return
+    }
   }
 
   // ════════════════════════════════════════════════════════════════
@@ -2277,19 +3115,12 @@ help         → args:[]                          — помощь
     bot.chat('🤖 ...')
 
     try {
-      // Подставляем имя игрока в системный промпт
       const sysPrompt = AI_SYSTEM.replace('PLAYER_NAME', fromUser)
       const response = await callAI(sysPrompt, ctx)
 
-      // Логируем полный ответ для отладки
       console.log('🤖 AI raw response:', JSON.stringify(response))
 
-      // ── Парсинг ответа ─────────────────────────────────────────
-      // Ищем JSON ВЕЗДЕ: в любом месте текста, через /, в markdown, на отдельной строке
       let cmdJson = null
-
-      // Извлекаем ЛЮБОЙ JSON-объект с полем "cmd" из ответа
-      // Regex: ищем { ... "cmd" ... } даже в середине текста
       const jsonMatches = response.match(/\{[^{}]*"cmd"[^{}]*\}/g) || []
       for (const m of jsonMatches) {
         try {
@@ -2298,7 +3129,6 @@ help         → args:[]                          — помощь
         } catch (_) {}
       }
 
-      // Если не нашли простым regex — ищем через JSON.parse по позициям
       if (!cmdJson) {
         for (let i = 0; i < response.length; i++) {
           if (response[i] !== '{') continue
@@ -2314,7 +3144,6 @@ help         → args:[]                          — помощь
         }
       }
 
-      // Текст ответа: убираем JSON и мусор
       const replyText = response
         .replace(/```(?:json)?[\s\S]*?```/g, '')
         .replace(/\{[^{}]*\}/g, '')
@@ -2324,7 +3153,6 @@ help         → args:[]                          — помощь
         .slice(0, 200)
       if (replyText) bot.chat('🤖 ' + replyText)
 
-      // Выполняем команду
       if (cmdJson && cmdJson.cmd) {
         console.log('✅ AI cmd parsed:', JSON.stringify(cmdJson))
         await sleep(150)
@@ -2336,6 +3164,178 @@ help         → args:[]                          — помощь
       bot.chat('🤖 Ошибка ИИ: ' + e.message.slice(0, 80))
       console.error('AI error:', e.message)
     }
+  }
+
+  // ════════════════════════════════════════════════════════════════
+  //  AI ПЛАНЕР — многоходовые планы
+  // ════════════════════════════════════════════════════════════════
+
+  async function createAndExecutePlan (goal, fromUser) {
+    const hasKey = GROQ_KEY || CEREBRAS_KEY
+    if (!hasKey) {
+      bot.chat('🤖 Планировщик выкл. Нет API ключа.')
+      return
+    }
+
+    bot.chat('🤖 Создаю план для: "' + goal + '"...')
+
+    const invSummary = (() => {
+      const sum = {}; bot.inventory.items().forEach(i => { sum[i.name] = (sum[i.name] || 0) + i.count })
+      return Object.keys(sum).slice(0, 15).map(n => n + '×' + sum[n]).join(', ')
+    })()
+
+    const context = `[Цель: ${goal}]
+[Инвентарь: ${invSummary || 'пусто'}]
+[Позиция: ${bot.entity.position.x.toFixed(0)} ${bot.entity.position.y.toFixed(0)} ${bot.entity.position.z.toFixed(0)}]
+[HP: ${Math.round(bot.health)}/20] [Food: ${bot.food}/20]
+[Броня: ${getArmorStatus()}]
+[Режим: ${behaviorMode}]`
+
+    try {
+      const response = await callAI(AI_SYSTEM_PLANNER, context)
+      console.log('🤖 Planner response:', JSON.stringify(response))
+
+      let planData = null
+
+      const jsonMatches = response.match(/\{[\s\S]*?"plan"[\s\S]*?\}/g) || []
+      for (const m of jsonMatches) {
+        try {
+          const parsed = JSON.parse(m)
+          if (parsed.plan && Array.isArray(parsed.plan)) {
+            planData = parsed
+            break
+          }
+        } catch (_) {}
+      }
+
+      if (!planData || !planData.plan || !planData.plan.length) {
+        bot.chat('🤖 Не смог создать план. Попробуй точнее сформулировать цель.')
+        return
+      }
+
+      currentPlan = {
+        goal: goal,
+        steps: planData.plan,
+        createdAt: Date.now()
+      }
+      currentPlanStep = 0
+      planExecutionActive = true
+      planInterrupted = false
+      planInterruptReason = ''
+      actionHistory = []
+
+      bot.chat('📋 План создан: ' + planData.plan.length + ' шагов. Цель: ' + (planData.final_goal || goal))
+      console.log('📋 Plan started:', JSON.stringify(currentPlan))
+
+      executePlanStep(fromUser)
+    } catch (e) {
+      bot.chat('🤖 Ошибка планировщика: ' + e.message.slice(0, 80))
+      console.error('Planner error:', e.message)
+    }
+  }
+
+  async function executePlanStep (fromUser) {
+    if (!currentPlan || !planExecutionActive) return
+
+    if (currentPlanStep >= currentPlan.steps.length) {
+      bot.chat('✅ План выполнен! Цель "' + currentPlan.goal + '" достигнута!')
+      currentPlan = null
+      planExecutionActive = false
+      return
+    }
+
+    if (planInterrupted) {
+      bot.chat('⚠️ План прерван: ' + planInterruptReason)
+      currentPlan = null
+      planExecutionActive = false
+      return
+    }
+
+    if (isDangerousSituation()) {
+      planInterrupted = true
+      planInterruptReason = 'Опасность! ' + getDangerDescription()
+      bot.chat('🚨 План прерван: ' + planInterruptReason)
+      currentPlan = null
+      planExecutionActive = false
+      return
+    }
+
+    const step = currentPlan.steps[currentPlanStep]
+    console.log('📍 Executing plan step ' + (currentPlanStep + 1) + ':', JSON.stringify(step))
+
+    const cmdObj = {
+      cmd: step.action,
+      args: step.args || []
+    }
+
+    actionHistory.push({
+      step: currentPlanStep,
+      action: step.action,
+      args: step.args,
+      reasoning: step.reasoning,
+      timestamp: Date.now()
+    })
+
+    attentionLocked = true
+
+    try {
+      await executeAiCmd(cmdObj, fromUser)
+      currentPlanStep++
+      await sleep(500)
+      attentionLocked = false
+      executePlanStep(fromUser)
+    } catch (e) {
+      lastPlanError = e.message
+      console.error('Plan step error:', e.message)
+      actionHistory[actionHistory.length - 1].error = e.message
+      currentPlanStep++
+      attentionLocked = false
+      await sleep(300)
+      executePlanStep(fromUser)
+    }
+  }
+
+  function stopCurrentPlan () {
+    if (currentPlan) {
+      bot.chat('⏹️ План остановлен.')
+      currentPlan = null
+      planExecutionActive = false
+      attentionLocked = false
+    } else {
+      bot.chat('ℹ️ Нет активного плана.')
+    }
+  }
+
+  function isDangerousSituation () {
+    if (!bot.entity) return false
+    const hp = bot.health
+    if (hp < 6) return true
+    if (bot.food < 4) return true
+    const hostile = bot.nearestEntity(e => e.isValid && e.position &&
+      e.position.distanceTo(bot.entity.position) < 4 && isHostileMob(e))
+    if (hostile) return true
+    const lava = bot.blockAt(bot.entity.position)
+    if (lava && (lava.name === 'lava' || lava.name === 'flowing_lava')) return true
+    return false
+  }
+
+  function getDangerDescription () {
+    if (!bot.entity) return 'неизвестно'
+    if (bot.health < 6) return 'мало HP: ' + Math.round(bot.health)
+    if (bot.food < 4) return 'мало еды: ' + bot.food
+    const hostile = bot.nearestEntity(e => e.isValid && e.position &&
+      e.position.distanceTo(bot.entity.position) < 4 && isHostileMob(e))
+    if (hostile) return 'рядом ' + hostile.name
+    return 'опасность'
+  }
+
+  function getArmorStatus () {
+    const pieces = []
+    for (const slot of [5, 6, 7, 8]) {
+      const item = bot.inventory.slots[slot]
+      if (item) pieces.push(item.name)
+    }
+    return pieces.length ? pieces.join(', ') : 'нет'
   }
 
   // ════════════════════════════════════════════════════════════════
@@ -2392,31 +3392,17 @@ help         → args:[]                          — помощь
   // ════════════════════════════════════════════════════════════════
   async function showHelp () {
     const msgs = [
-      '━━━ 🤖 AI_Guardian v8.0 ━━━ ' +
-      '🧠 Пиши свободно без ! → ИИ поймёт и выполнит: ' +
-      '"добудь алмазы" | "скрафти меч и отдай мне" | "иди сюда" | "что у тебя есть"',
-
-      '🚶 ДВИЖЕНИЕ: !за мной | !ко мне | !приди X Z [Y] | !стоп | !спринт | !прыгни | !стоп следуй | !вылези (выйти из транспорта)',
-
-      '📍 ТОЧКИ: !сохрани [имя] | !пресеты | !иди [имя] | !точка (запомнить базу) | !вернуться | !действие [имя] [стой|нажми_рычаг|нажми_кнопку]',
-
-      '🚤 ЛОДКА: !лодка → !плыви X Z → !плыви стоп → !вылези  |  💧 ВОДА: авто-спринт+прыжки, следит за кислородом',
-
-      '⚔️ БОЙ: !атакуй <цель> | !убей всё | !охрана | !охрана стоп | !защищай меня | !телохранитель стоп | !режим мирный/защита/агрессия',
-
-      '🛡️ ЩИТ: !щит | !щит стоп | !автощит  |  🛡️ БРОНЯ: !броня | !автоброня  Авто: netherite→diamond→iron→gold→chainmail→leather',
-
-      '⛏️ ДОБЫЧА: !копай [кол] <блок> | !собери [кол] <блок> | !фарми <блок> [кол] | !добудь <блок> [кол] | !стоп собирать  |  🏗️ ФЕРМЫ: !ферма тростника/пшеницы/деревьев/автокриперов',
-
-      '🔨 КРАФТ: !крафт <предмет> [кол] | !крафт+дай <предмет> [кол] | !печка <предмет> [кол] | !зелье силы/регенерации/скорости/прыжка/огня/яда | !зачаровать <предмет>',
-
-      '📦 ИНВ: !инв | !сколько <вещь> | !выбрось <вещь/всё/мусор> | !надеть <вещь> | !дай <вещь> | !что сломано | !сортировать  |  🗃️ СУНДУК: !сундук проверить/положить/взять',
-
-      '🍖 !ешь | !автоеда | 🛏️ !спать | !встать | 🗺️ !статус | !где | !где <игрок> | !дист <игрок> | !игроки | !время | !погода | !пинг | !что под',
-
-      '🔄 ПАТРУЛЬ: !патруль добавь|старт|стоп|очисти|список  |  💤 !афк (вращение) | !антиафк  |  💬 !скажи <текст> | !шепни <ник> <текст> | !команда <mc>',
+      '🤖 **AI_Guardian v9.0** | 🧠 Пиши без ! → "добудь алмазы", "скрафти меч", "иди сюда"',
+      '🚶 !за мной | !ко мне | !приди X Z | !стоп | !прыгни | !спринт | !вылези',
+      '⚔️ !атакуй <цель> | !убей всё | !охрана | !режим мирный/защита/агрессия',
+      '🛡️ !щит/стоп | !автощит | !броня | !автоброня | auto: netherite→diamond→iron',
+      '⛏️ !копай [кол] <блок> | !добудь <блок> [кол] | !ферма тростника/пшеницы/деревьев',
+      '🔨 !крафт <предмет> [кол] | !печка <руда> [кол] | !крафт+дай <предмет> [кол]',
+      '📦 !инв | !выбрось <вещь> | !дай <вещь> | !сундук проверить/положить/взять',
+      '🍖 !ешь | !автоеда | 🛏️ !спать | !встать | 🗺️ !статус | !игроки | !пинг',
+      '🛡️ **АВТОНОМНОСТЬ:** !выживание | !idle | !план <цель> | !стопплан | !помощь',
     ]
-    for (const m of msgs) { bot.chat(m); await sleep(200) }
+    for (const m of msgs) { bot.chat(m); await sleep(600) }
   }
 
   // ════════════════════════════════════════════════════════════════
@@ -2903,6 +3889,40 @@ help         → args:[]                          — помощь
     // ══ AFK ══════════════════════════════════════════════════════════
     if (msg === '!афк') { if (MODE === 'afk') { MODE = null; bot.chat('✅ AFK выкл.') } else { fullStop(); MODE = 'afk'; bot.chat('💤 AFK вкл.') }; return }
     if (msg === '!антиафк') { antiAfk = !antiAfk; bot.chat('🤖 Анти-АФК: ' + (antiAfk ? '✅' : '❌')); return }
+
+    // ══ АВТОНОМНОЕ ВЫЖИВАНИЕ ══════════════════════════════════════════
+    if (msg === '!выживание' || msg === '!survival') {
+      survivalMode = !survivalMode
+      if (survivalMode) {
+        survivalGoals = TECH_TREE.survivalPriority
+        bot.chat('🛡️ Режим выживания ВКЛЮЧЁН! Буду автоматически: есть, лечиться, искать броню и оружие.')
+      } else {
+        bot.chat('🛡️ Режим выживания ВЫКЛЮЧЕН.')
+      }
+      return
+    }
+    if (msg === '! idle' || msg === '!idle') {
+      idleMode = !idleMode
+      if (idleMode) {
+        idleActions = [...IDLE_ACTIVITIES].sort(() => Math.random() - 0.5)
+        currentIdleAction = 0
+        bot.chat('🤖 Idle режим ВКЛЮЧЁН! Буду исследовать и заниматься всяким когда не занят.')
+      } else {
+        bot.chat('🤖 Idle режим ВЫКЛЮЧЕН.')
+      }
+      return
+    }
+    if (msg === '!план') {
+      if (tok[1]) {
+        const goal = raw.slice(raw.indexOf(' ') + 1).trim()
+        await createAndExecutePlan(goal, user)
+      } else {
+        bot.chat('📋 Использование: !план <цель>')
+        bot.chat('📋 Примеры: !план собрать алмазы, !план выжить, !план построить дом')
+      }
+      return
+    }
+    if (msg === '!стопплан') { stopCurrentPlan(); return }
 
     // ══ ЧАТ ══════════════════════════════════════════════════════════
     if (msg.startsWith('!скажи '))   { bot.chat(raw.slice(7)); return }
